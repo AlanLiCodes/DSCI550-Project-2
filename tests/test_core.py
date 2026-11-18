@@ -96,3 +96,37 @@ def test_windows_from_long_orders_by_minute():
     X, meta = windows_from_long(std)
     assert X.shape == (2, 15, 25)
     assert np.allclose(X[0, :, 0], np.arange(15) + 60.0)
+
+
+def test_short_runs_padded_with_masked_minutes():
+    df = _records(13)  # duty-cycled 13-minute run
+    std, _ = standardise(df)
+    X, meta = build_windows(std, min_run=13)
+    assert X.shape == (1, 15, 25)
+    assert np.isnan(X[0, 13:]).all() and not np.isnan(X[0, :13]).any()
+    assert meta["observed_minutes"].iloc[0] == 13
+    assert build_windows(std, min_run=15)[0].shape[0] == 0
+
+
+def test_sentinels_and_short_duration_masked():
+    df = _records(15)
+    df["dur"] = 60.0
+    df.loc[2, "dur"] = 20.0
+    band = [c for c in df.columns if c.startswith("f")][0]
+    df.loc[5, band] = -150.0
+    std, _ = standardise(df)
+    assert std.loc[2, BAND_COLS].isna().all()
+    assert np.isnan(std.loc[5, BAND_COLS[0]]) and not np.isnan(std.loc[5, BAND_COLS[1]])
+
+
+def test_wide_test_format_parsed():
+    from vesselnoise.data import windows_from_wide
+
+    cols = [f"m{m:02d}_{b}" for m in range(1, 16) for b in config.BAND_COLUMN_NAMES]
+    vals = np.arange(2 * 375, dtype=float).reshape(2, 375) / 10 + 50
+    df = pd.DataFrame(vals, columns=cols)
+    df.insert(0, "ID", ["a", "b"])
+    X, meta = windows_from_wide(df)
+    assert X.shape == (2, 15, 25)
+    assert X[0, 0, 1] == vals[0, 1] and X[0, 1, 0] == vals[0, 25]
+    assert meta["window_id"].tolist() == ["a", "b"]

@@ -1,7 +1,7 @@
 """Column detection for the competition files.
 
-The released files' exact column names were not available when this was
-written, so detection is heuristic and reported by ``scripts/inspect_data.py``.
+Exact export names (``TOL_<f>``, ``site``, ``t``, ``dur``, ``recorder``) are tried
+first; heuristics are a fallback for other layouts.
 """
 
 from __future__ import annotations
@@ -35,6 +35,9 @@ def match_band_columns(columns, tol: float = 0.06) -> list[str]:
     of the centre, or equals the centre rounded to an integer (31.6 -> 31 or 32).
     Falls back to columns named by band index (e.g. 'band_0'..'band_24').
     """
+    exact = [c for c in config.BAND_COLUMN_NAMES if c in set(columns)]
+    if len(exact) == config.N_BANDS:
+        return exact
     hits: dict[int, str] = {}
     for col in columns:
         f = parse_frequency(col)
@@ -89,6 +92,7 @@ class Schema:
     minute: str | None = None
     quality: str | None = None
     duration: str | None = None
+    recorder: str | None = None
     units: str = "db"
     extra: list[str] = field(default_factory=list)
 
@@ -104,10 +108,11 @@ class Schema:
             minute=find_column(cols, config.MINUTE_CANDIDATES),
             quality=find_column(cols, config.QUALITY_CANDIDATES),
             duration=find_column(cols, config.DURATION_CANDIDATES),
+            recorder=find_column(cols, config.RECORDER_CANDIDATES),
         )
         sample = df[bands].to_numpy(dtype=float, na_value=np.nan)[:50_000]
         sch.units = infer_units(sample)
-        used = set(bands) | {c for c in [sch.station, sch.time, sch.window_id, sch.minute, sch.quality, sch.duration] if c}
+        used = set(bands) | {c for c in [sch.station, sch.time, sch.window_id, sch.minute, sch.quality, sch.duration, sch.recorder] if c}
         sch.extra = [c for c in cols if c not in used]
         return sch
 
@@ -116,7 +121,7 @@ class Schema:
             f"band columns ({len(self.band_cols)}): {self.band_cols[0]} .. {self.band_cols[-1]}",
             f"units: {self.units}",
         ]
-        for name in ["station", "time", "window_id", "minute", "quality", "duration"]:
+        for name in ["station", "time", "window_id", "minute", "quality", "duration", "recorder"]:
             lines.append(f"{name}: {getattr(self, name)}")
         lines.append(f"other columns: {self.extra}")
         return "\n".join(lines)

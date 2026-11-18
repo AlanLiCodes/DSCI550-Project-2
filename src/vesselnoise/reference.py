@@ -2,8 +2,9 @@
 
 A reference is a background-subtracted vessel passage expressed as linear
 band energy per minute in the 25 competition bands, together with the
-(approximate) range track at which it was recorded. Real references come from
-HearMyShip (small vessels) and Ocean Networks Canada (large ships) audio via
+(approximate) range track at which it was recorded. The competition's own test
+additions derive from VTUAD v1.3.2 (Ocean Networks Canada, CC BY 4.0), so VTUAD
+is the primary real source, with HearMyShip (small vessels) second. Audio is converted via
 :func:`audio_to_minute_bands`; until those are converted, :func:`synthetic_reference`
 produces stand-ins so the whole pipeline can be developed and tested.
 """
@@ -36,41 +37,39 @@ class Reference:
 
 # ---------------------------------------------------------------- audio -----
 
-def audio_to_minute_bands(x: np.ndarray, fs: float, sensitivity_db: float = 0.0, minute_s: float = 60.0):
-    """Convert a pressure time series to minute-averaged decidecade band energy.
+def audio_to_minute_bands(x: np.ndarray, fs: float, sensitivity_db: float = 0.0, segment_s: float = 2.0, minute_s: float = 60.0):
+    """Convert a pressure time series to minute mean-square values in the 25 bands.
 
-    * 1-second Hann-windowed FFT frames (1 Hz resolution), PSD in units^2/Hz.
-    * PSD integrated over each decidecade band [lower, upper) edge.
-    * Seconds averaged in linear energy into minute bins (partial final minute dropped).
+    Follows the organisers' reference conversion (starter notebook):
+    * non-overlapping ``segment_s``-second segments, each mean-removed, one-sided
+      Hann-window PSD (density scaling);
+    * PSD integrated over each decidecade band [centre * 10^-0.05, centre * 10^0.05);
+    * segments averaged in linear units over each complete minute (trailing partial
+      minute dropped); bands above Nyquist are NaN, not zero.
 
-    ``sensitivity_db`` (dB re V/uPa) converts volts to uPa; because references are
-    rescaled to a target addition-to-background ratio, absolute calibration only
-    matters for diagnostics, not for the labels.
+    ``sensitivity_db`` (dB re V/uPa) converts volts to uPa. References are rescaled to
+    a target ATB, so absolute calibration only matters for diagnostics.
     """
+    from scipy.signal import periodogram
+
     x = np.asarray(x, dtype=float)
     if x.ndim > 1:
         x = x.mean(axis=1)
     x = x / (10.0 ** (sensitivity_db / 20.0))
-    n = int(round(fs))
-    n_frames = len(x) // n
-    if n_frames == 0:
-        raise ValueError("recording shorter than one second")
-    frames = x[: n_frames * n].reshape(n_frames, n)
-    win = np.hanning(n)
-    spec = np.fft.rfft(frames * win, axis=1)
-    psd = (np.abs(spec) ** 2) / (fs * np.sum(win**2))
-    psd[:, 1:-1] *= 2.0  # one-sided
-    freqs = np.fft.rfftfreq(n, d=1.0 / fs)
-    df = freqs[1] - freqs[0]
-    bands = np.zeros((n_frames, config.N_BANDS))
-    for k, (lo, hi) in enumerate(zip(config.BAND_LOWER_HZ, config.BAND_UPPER_HZ)):
-        sel = (freqs >= lo) & (freqs < hi)
-        bands[:, k] = psd[:, sel].sum(axis=1) * df if sel.any() else np.nan
-    per_min = int(round(minute_s))
-    n_min = n_frames // per_min
+    seg = int(round(segment_s * fs))
+    per_min = int(round(minute_s / segment_s))
+    n_min = len(x) // (seg * per_min)
     if n_min == 0:
         raise ValueError("recording shorter than one minute")
-    return bands[: n_min * per_min].reshape(n_min, per_min, -1).mean(axis=1)
+    segments = x[: n_min * per_min * seg].reshape(-1, seg)
+    freqs, psd = periodogram(segments, fs=fs, window="hann", detrend="constant", return_onesided=True, scaling="density", axis=1)
+    df = freqs[1] - freqs[0]
+    bands = np.full((len(segments), config.N_BANDS), np.nan)
+    for k, (lo, hi) in enumerate(zip(config.BAND_LOWER_HZ, config.BAND_UPPER_HZ)):
+        sel = (freqs >= lo) & (freqs < hi)
+        if hi <= fs / 2 and sel.any():
+            bands[:, k] = psd[:, sel].sum(axis=1) * df
+    return bands.reshape(n_min, per_min, -1).mean(axis=1)
 
 
 def subtract_own_background(lin: np.ndarray, quantile: float = 0.1):

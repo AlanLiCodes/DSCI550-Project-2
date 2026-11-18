@@ -18,15 +18,21 @@ def test_thorp_increases_with_frequency():
 
 
 def test_audio_tone_lands_in_its_band():
-    fs = 16000
+    fs = 24000
     t = np.arange(fs * 120) / fs
     x = np.sin(2 * np.pi * 1000.0 * t)
     bands = audio_to_minute_bands(x, fs)
     assert bands.shape == (2, 25)
     k = int(np.argmin(np.abs(config.BAND_CENTRES_HZ - 1000)))
-    assert np.argmax(bands[0]) == k
+    assert np.nanargmax(bands[0]) == k
     # Parseval: band energy ~ mean square of the sine (0.5)
-    assert bands[0].sum() == pytest.approx(0.5, rel=0.05)
+    assert np.nansum(bands[0]) == pytest.approx(0.5, rel=0.05)
+
+
+def test_audio_bands_above_nyquist_are_nan():
+    fs = 16000
+    bands = audio_to_minute_bands(np.random.default_rng(0).normal(size=fs * 60), fs)
+    assert np.isnan(bands[0, -1]) and np.isfinite(bands[0, :-1]).all()
 
 
 def test_mix_one_hits_target_atb_label():

@@ -30,14 +30,35 @@ WINDOW_MINUTES = 15
 # Consecutive records further apart than this are a recording gap; windows
 # never bridge a gap.
 MAX_STEP_MINUTES = 1.5
+# A window may be built from a run of at least this many consecutive minutes; the
+# remaining minute positions are masked (Test.csv windows miss at most 2 minutes).
+MIN_RUN_MINUTES = 13
 
 # --- Column-name candidates (case-insensitive, first match wins) ----------
 STATION_CANDIDATES = ["station", "site", "station_id", "site_id", "recorder", "location", "deployment"]
-TIME_CANDIDATES = ["timestamp", "datetime", "time", "date_time", "start_time", "utc", "date"]
+TIME_CANDIDATES = ["timestamp", "t", "datetime", "time", "date_time", "start_time", "utc", "date"]
 ID_CANDIDATES = ["id", "window_id", "sample_id", "ID", "example_id"]
-MINUTE_CANDIDATES = ["minute", "minute_index", "t", "step", "offset_min"]
+MINUTE_CANDIDATES = ["minute", "minute_index", "step", "offset_min"]
 QUALITY_CANDIDATES = ["quality", "quality_flag", "qc", "qc_flag", "flag"]
-DURATION_CANDIDATES = ["duration", "observed_duration", "duration_s", "seconds_observed"]
+DURATION_CANDIDATES = ["dur", "duration", "observed_duration", "duration_s", "seconds_observed"]
+RECORDER_CANDIDATES = ["recorder", "deployment_id", "instrument"]
+
+# Real export names of the 25 common bands (South_African_Real_Acoustics, Test.csv).
+BAND_COLUMN_NAMES = [f"TOL_{c}" for c in ["31.6", "39.8", "50.1", "63.1", "79.4", "100", "125.9", "158.5", "199.5",
+    "251.2", "316.2", "398.1", "501.2", "631", "794.3", "1000", "1258.9", "1584.9", "1995.3", "2511.9", "3162.3",
+    "3981.1", "5011.9", "6309.6", "7943.3"]]
+
+# Records observed for less than this many seconds are masked (README: check `dur`).
+MIN_DURATION_S = 55.0
+# Band levels outside this range are export sentinels / glitches and are masked
+# (653 Richards Bay rows hold negative levels down to -156 dB; Test.csv minimum is 29 dB).
+VALID_DB_RANGE = (20.0, 200.0)
+
+# Whole-minute dropout applied to mixture backgrounds. Test.csv windows are missing
+# whole minutes (all 25 bands at once) while the released training records have no
+# missing band cells, so models must learn to handle masked minutes.
+MINUTE_DROPOUT_P = 0.5  # probability a window gets any dropped minutes
+MINUTE_DROPOUT_MAX = 2  # at most this many minutes dropped
 
 # Quality-flag values treated as good when a quality column is present.
 GOOD_QUALITY_VALUES = {0, 1, "good", "ok", "pass", True}
