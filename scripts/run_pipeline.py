@@ -6,11 +6,12 @@ Examples
 # Development run on synthetic stand-in data (no downloads needed)
 python scripts/run_pipeline.py --synthetic --fast --out outputs/synthetic
 
-# Real data, synthetic references until HearMyShip / ONC are converted
-python scripts/run_pipeline.py --records data/Train.csv --test data/Test.csv --out outputs/run1
+# Real data (unzipped South_African_Real_Acoustics), synthetic references until ONC/VTUAD are converted
+python scripts/run_pipeline.py --records data/South_African_Real_Acoustics --test data/Test.csv \
+    --sample-submission data/SampleSubmission.csv --loso --out outputs/run1
 
 # Real data with converted references, all evaluations
-python scripts/run_pipeline.py --records data/Train.csv --test data/Test.csv \
+python scripts/run_pipeline.py --records data/South_African_Real_Acoustics --test data/Test.csv \
     --refs-hearmyship data/references/hearmyship --refs-onc data/references/onc \
     --loso --source-shift --ablations --out outputs/run2
 """
@@ -30,7 +31,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from vesselnoise import config  # noqa: E402
-from vesselnoise.data import load_csv, standardise  # noqa: E402
+from vesselnoise.data import load_records, load_test, standardise  # noqa: E402
 from vesselnoise.pipeline import (  # noqa: E402
     build_experiment,
     diagnostics,
@@ -47,7 +48,7 @@ from vesselnoise.windows import build_windows, windows_from_long  # noqa: E402
 
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--records", help="training records CSV (unlabelled band levels)")
+    ap.add_argument("--records", help="training records: unzipped archive dir (acoustics/*.parquet), a parquet or a CSV")
     ap.add_argument("--test", help="competition test CSV (inference only)")
     ap.add_argument("--sample-submission", help="SampleSubmission.csv to copy column order / IDs from")
     ap.add_argument("--refs-hearmyship", help="dir of converted HearMyShip passages")
@@ -58,6 +59,10 @@ def parse_args():
     ap.add_argument("--n-val", type=int, default=5000)
     ap.add_argument("--n-test", type=int, default=5000)
     ap.add_argument("--p-zero", type=float, default=config.P_ZERO_ADDITION)
+    ap.add_argument("--minute-dropout", type=float, default=config.MINUTE_DROPOUT_P, help="share of backgrounds with masked whole minutes")
+    ap.add_argument("--station-balance", type=float, default=0.5, help="0 = sample windows uniformly, 1 = stations uniformly")
+    ap.add_argument("--station-aware", action="store_true", help="use station/hour features in experiments (not usable for Test.csv)")
+    ap.add_argument("--drop-families", default="", help="comma-separated feature families to drop everywhere, e.g. level")
     ap.add_argument("--loso", action="store_true", help="leave-one-site-out cross-validation")
     ap.add_argument("--source-shift", action="store_true", help="train on one reference source, test on the other")
     ap.add_argument("--ablations", action="store_true")
@@ -90,19 +95,24 @@ def main():
 
     # ---- data ----------------------------------------------------------------
     hidden_labels = None
+    X_test = meta_test = None
+    id_name = "ID"
     if args.synthetic:
         raw = synthetic_records(seed=args.seed)
         records, schema = standardise(raw)
         test_raw, hidden_labels = synthetic_test(records, n=500, seed=args.seed + 1)
-        test_std, test_schema = standardise(test_raw)
+        test_std, _ = standardise(test_raw)
+        X_test, meta_test = windows_from_long(test_std)
     else:
         if not args.records:
             sys.exit("--records is required unless --synthetic")
-        records, schema = load_csv(args.records, nrows=args.nrows)
-        test_std = test_schema = None
+        records, schema = load_records(args.records, nrows=args.nrows)
         if args.test:
-            test_std, test_schema = load_csv(args.test)
+            X_test, meta_test, id_name = load_test(args.test)
+            print(f"[test] {len(X_test)} windows, missing cells {np.isnan(X_test).mean():.2%}, station column: {'station' in meta_test}")
     print("[schema]\n" + schema.describe())
+    drop = tuple(f for f in args.drop_families.split(",") if f)
+    mix_kwargs = {"minute_dropout": (args.minute_dropout, config.MINUTE_DROPOUT_MAX), "station_balance": args.station_balance}
 
     X_bg, meta_bg = build_windows(records)
     print(f"[windows] {len(X_bg)} background windows from {meta_bg['station'].nunique()} stations")
@@ -110,9 +120,11 @@ def main():
 
     # ---- main blocked evaluation ----------------------------------------------
     n_mix = {"train": args.n_train, "val": args.n_val, "test": args.n_test}
-    exp = build_experiment(X_bg, meta_bg, refs, n_mix, seed=args.seed, p_zero=args.p_zero)
+    exp = build_experiment(
+        X_bg, meta_bg, refs, n_mix, seed=args.seed, p_zero=args.p_zero, station_aware=args.station_aware, mix_kwargs=mix_kwargs
+    )
     print("[split]", json.dumps(exp.log))
-    results, preds, fitted = evaluate_models(exp, seed=args.seed, fast=args.fast)
+    results, preds, fitted = evaluate_models(exp, seed=args.seed, fast=args.fast, drop_families=drop)
     results.to_csv(out / "results.csv", index=False)
     show = ["model", "split", "score", "rmse", "mae", "bias", "ci_lo", "ci_hi", "roc_auc", "pr_auc", "fit_s"]
     print("\n[results]\n" + results[[c for c in show if c in results]].round(4).to_string(index=False))
@@ -138,7 +150,10 @@ def main():
         print("\n[ablations]\n" + abl[["dropped", "split", "score", "rmse"]].round(4).to_string(index=False))
 
     if args.loso:
-        loso, loso_sum = run_loso(X_bg, meta_bg, refs, n_train=max(args.n_train // 2, 2000), n_test=max(args.n_test // 2, 1000), seed=args.seed, fast=True)
+        loso, loso_sum = run_loso(
+            X_bg, meta_bg, refs, n_train=max(args.n_train // 2, 2000), n_test=max(args.n_test // 2, 1000), seed=args.seed,
+            fast=True, station_aware=args.station_aware, drop_families=drop, mix_kwargs=mix_kwargs,
+        )
         loso.to_csv(out / "loso.csv", index=False)
         loso_sum.to_csv(out / "loso_summary.csv", index=False)
         print("\n[leave-one-site-out]\n" + loso_sum.round(4).to_string(index=False))
@@ -154,6 +169,7 @@ def main():
                 ex = build_experiment(
                     X_bg, meta_bg, refs, n_mix, seed=args.seed,
                     ref_filter={"train": lambda r, s=tr_src: r.source == s, "val": lambda r, s=tr_src: r.source == s, "test": lambda r, s=te_src: r.source == s},
+                    station_aware=args.station_aware, mix_kwargs=mix_kwargs,
                 )
                 res, _, _ = evaluate_models(ex, seed=args.seed, fast=True, eval_splits=("test",), with_ci=False)
                 rows.append(res.assign(train_source=tr_src, test_source=te_src))
@@ -164,8 +180,7 @@ def main():
             print("[source-shift] needs two reference sources; skipped")
 
     # ---- submission ------------------------------------------------------------
-    if test_std is not None:
-        X_test, meta_test = windows_from_long(test_std)
+    if X_test is not None:
         final = args.final_model if args.final_model != "auto" else summary.get("best_by_loso", best_val)
         if final in ("constant", "presence_logreg"):
             final = "hist_gb"
@@ -173,12 +188,15 @@ def main():
         share, score = fit_final_and_predict(
             X_bg[keep], meta_bg.loc[keep].reset_index(drop=True), refs, X_test, meta_test,
             model_name=final, n_train=args.n_train + args.n_val, seed=args.seed, fast=args.fast,
+            drop_families=drop, mix_kwargs=mix_kwargs,
         )
-        id_name = test_schema.window_id or "ID"
         sub = pd.DataFrame({id_name: meta_test["window_id"].to_numpy(), config.TARGET_SHARE: share, config.TARGET_SCORE: score})
         if args.sample_submission:
             ss = pd.read_csv(args.sample_submission)
             sub = ss[[ss.columns[0]]].merge(sub.rename(columns={id_name: ss.columns[0]}), on=ss.columns[0], how="left")[ss.columns]
+        assert sub[id_name].is_unique and len(sub) == len(X_test)
+        assert np.isfinite(sub[[config.TARGET_SHARE, config.TARGET_SCORE]].to_numpy()).all()
+        assert sub[[config.TARGET_SHARE, config.TARGET_SCORE]].stack().between(0, 1).all()
         sub.to_csv(out / "submission.csv", index=False)
         summary["final_model"] = final
         print(f"\n[submission] {len(sub)} rows with {final} -> {out / 'submission.csv'}")

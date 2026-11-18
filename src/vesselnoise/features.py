@@ -68,11 +68,20 @@ def _shape_features(series_db, prefix):
     }
 
 
-class FeatureBuilder:
-    """Fit station statistics and the excess baseline on training backgrounds only."""
+STATION_FAMILIES = ("station_norm", "time")
 
-    def __init__(self, baseline: ExcessEnergyBaseline | None = None):
-        self.baseline = baseline or ExcessEnergyBaseline()
+
+class FeatureBuilder:
+    """Fit station statistics and the excess baseline on training backgrounds only.
+
+    ``station_aware=False`` drops everything that needs a station or timestamp
+    (station-normalised levels, hour of day, station x hour baseline priors). The
+    competition Test.csv has neither, so submissions must use this mode.
+    """
+
+    def __init__(self, baseline: ExcessEnergyBaseline | None = None, station_aware: bool = True):
+        self.station_aware = station_aware
+        self.baseline = baseline or ExcessEnergyBaseline(combine="min" if station_aware else "window")
 
     def fit(self, X_bg: np.ndarray, meta_bg: pd.DataFrame, X_tune=None, y_tune=None, meta_tune=None):
         lin = db_to_lin(X_bg)
@@ -112,13 +121,14 @@ class FeatureBuilder:
                 | {"std_broadband": np.nanstd(bb_series, axis=1), "std_band_mean": np.nanmean(band_std, axis=1)},
             )
 
-        ref = np.stack([self.station_median_db_.get(s, self.global_median_db_) for s in meta["station"]])
-        rel = mean_db - ref
-        add(
-            "station_norm",
-            {f"rel_b{k:02d}": rel[:, k] for k in range(B)}
-            | {"rel_broadband": _nanmean(rel, axis=1), "rel_low": _nanmean(rel[:, _LOW], axis=1)},
-        )
+        if self.station_aware:
+            ref = np.stack([self.station_median_db_.get(s, self.global_median_db_) for s in meta["station"]])
+            rel = mean_db - ref
+            add(
+                "station_norm",
+                {f"rel_b{k:02d}": rel[:, k] for k in range(B)}
+                | {"rel_broadband": _nanmean(rel, axis=1), "rel_low": _nanmean(rel[:, _LOW], axis=1)},
+            )
 
         low_db = lin_to_db(_nanmean(lin[:, :, _LOW], axis=(1, 2)))
         high_db = lin_to_db(_nanmean(lin[:, :, _HIGH], axis=(1, 2)))
@@ -139,10 +149,11 @@ class FeatureBuilder:
         minute_missing = np.isnan(X).all(axis=2)
         add("missing", {"missing_frac": np.isnan(X).mean(axis=(1, 2)), "missing_minutes": minute_missing.sum(axis=1)})
 
-        hour = meta["hour"].to_numpy(dtype=float) if "hour" in meta else np.full(N, np.nan)
-        add("time", {"hour_sin": np.sin(2 * np.pi * hour / 24), "hour_cos": np.cos(2 * np.pi * hour / 24)})
+        if self.station_aware:
+            hour = meta["hour"].to_numpy(dtype=float) if "hour" in meta else np.full(N, np.nan)
+            add("time", {"hour_sin": np.sin(2 * np.pi * hour / 24), "hour_cos": np.cos(2 * np.pi * hour / 24)})
 
-        add("excess", {"excess_share": self.baseline.predict(X, meta)})
+        add("excess", {"excess_share": self.baseline.predict(X, meta if self.station_aware else None)})
 
         df = pd.DataFrame(feats)
         df.attrs["families"] = fam

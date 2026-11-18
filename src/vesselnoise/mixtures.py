@@ -79,6 +79,16 @@ def mix_one(bg_db: np.ndarray, added_lin: np.ndarray, atb_db: float):
     return lin_to_db(mix_lin), add, share
 
 
+def drop_minutes(bg_db: np.ndarray, rng: np.random.Generator, p: float, max_minutes: int) -> np.ndarray:
+    """With probability ``p``, mask 1..max_minutes whole minutes (all bands) at random positions."""
+    if p <= 0 or rng.random() >= p:
+        return bg_db
+    out = bg_db.copy()
+    k = int(rng.integers(1, max_minutes + 1))
+    out[rng.choice(out.shape[0], size=k, replace=False)] = np.nan
+    return out
+
+
 def make_mixtures(
     X_bg: np.ndarray,
     meta_bg: pd.DataFrame,
@@ -88,12 +98,21 @@ def make_mixtures(
     atb_range_db=config.ATB_RANGE_DB,
     p_zero: float = config.P_ZERO_ADDITION,
     atb_sampler=None,
+    minute_dropout=(config.MINUTE_DROPOUT_P, config.MINUTE_DROPOUT_MAX),
+    station_balance: float = 0.5,
     **place_kwargs,
 ):
     """Build ``n`` labelled mixtures.
 
     ``atb_sampler(rng) -> float`` overrides the default uniform ATB draw, e.g. to
     match a target label distribution.
+
+    ``minute_dropout=(p, k)`` masks up to ``k`` whole minutes in a fraction ``p`` of
+    backgrounds *before* mixing, so labels are computed over the same observed cells.
+
+    ``station_balance`` in [0, 1] tempers station imbalance when drawing backgrounds:
+    window weight = count(station) ** -station_balance (0 = uniform over windows,
+    1 = uniform over stations). Richards Bay holds ~65% of released windows.
 
     Returns X_mix (n, 15, 25) dB, y_share (n,), y_present (n,), info DataFrame
     (carries station/day/hour of the background so splits stay valid).
@@ -104,9 +123,14 @@ def make_mixtures(
     y = np.zeros(n)
     present = np.zeros(n, dtype=int)
     rows = []
-    bg_idx = rng.integers(0, len(X_bg), size=n)
+    if station_balance and "station" in meta_bg:
+        counts = meta_bg["station"].map(meta_bg["station"].value_counts()).to_numpy(dtype=float)
+        w = counts ** (-float(station_balance))
+        bg_idx = rng.choice(len(X_bg), size=n, p=w / w.sum())
+    else:
+        bg_idx = rng.integers(0, len(X_bg), size=n)
     for i, b in enumerate(bg_idx):
-        bg = X_bg[b]
+        bg = drop_minutes(np.asarray(X_bg[b], dtype=float), rng, *minute_dropout)
         row = {"bg_index": int(b), "vessel_id": None, "source": None, "atb_db": np.nan, "cpa_m": np.nan}
         if not refs or rng.random() < p_zero:
             X[i] = bg

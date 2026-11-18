@@ -52,12 +52,16 @@ def build_experiment(
     atb_sampler=None,
     p_zero=config.P_ZERO_ADDITION,
     ref_filter=None,
+    station_aware=False,
+    mix_kwargs=None,
 ):
     """Split backgrounds chronologically and references by vessel, *then* build mixtures.
 
     ``ref_filter`` maps split name -> predicate on Reference (used for the
-    reference-source-shift experiment).
+    reference-source-shift experiment). ``station_aware=False`` (default) matches
+    the competition test set, which carries no station or timestamp.
     """
+    mix_kwargs = mix_kwargs or {}
     n_mix = n_mix or {"train": 20000, "val": 5000, "test": 5000}
     bg_split = chronological_split(meta_bg, fracs, buffer_days)
     ref_split = assign_reference_splits(refs, fracs, seed)
@@ -72,11 +76,12 @@ def build_experiment(
             # use every vessel of the requested source instead.
             rs = [r for r in refs if ref_filter[s](r)]
         X, y, pres, info = make_mixtures(
-            X_bg[m], meta_bg.loc[m].reset_index(drop=True), rs, n_mix[s], seed=seed + 101 * i, atb_sampler=atb_sampler, p_zero=p_zero
+            X_bg[m], meta_bg.loc[m].reset_index(drop=True), rs, n_mix[s],
+            seed=seed + 101 * i, atb_sampler=atb_sampler, p_zero=p_zero, **mix_kwargs,
         )
         splits[s] = SplitData(X, y, pres, info)
     tr = bg_split == "train"
-    fb = FeatureBuilder().fit(
+    fb = FeatureBuilder(station_aware=station_aware).fit(
         X_bg[tr], meta_bg.loc[tr].reset_index(drop=True), X_tune=splits["train"].X, y_tune=splits["train"].y, meta_tune=splits["train"].info
     )
     for s in SPLITS:
@@ -84,7 +89,9 @@ def build_experiment(
     log = {
         "background_windows": {s: int((bg_split == s).sum()) for s in [*SPLITS, "buffer"]},
         "reference_vessels": {s: sum(v == s for v in ref_split.values()) for s in SPLITS},
-        "baseline": {"threshold_db": fb.baseline.threshold_db, "k_quiet": fb.baseline.k_quiet},
+        "baseline": {"threshold_db": fb.baseline.threshold_db, "k_quiet": fb.baseline.k_quiet, "combine": fb.baseline.combine},
+        "station_aware": station_aware,
+        "mixture_label_mean": {s: float(splits[s].y.mean()) for s in SPLITS},
     }
     return Experiment(splits, fb, bg_split, ref_split, log)
 
@@ -148,9 +155,10 @@ def diagnostics(exp: Experiment, preds: dict, model: str, split: str = "test"):
     }
 
 
-def run_ablations(exp: Experiment, families=("temporal", "station_norm", "excess"), model_name="hist_gb", seed=config.SEED, fast=False):
+def run_ablations(exp: Experiment, families=("level", "temporal", "spectral", "excess", "station_norm"), model_name="hist_gb", seed=config.SEED, fast=False):
     out = []
-    for fam in [None, *families]:
+    present = set(exp.splits["train"].F.attrs.get("families", {}).values())
+    for fam in [None, *[f for f in families if f in present]]:
         drop = () if fam is None else (fam,)
         m = {model_name: regressors(seed, fast=fast)[model_name]}
         res, _, _ = evaluate_models(exp, m, drop_families=drop, seed=seed, with_ci=False)
@@ -159,12 +167,16 @@ def run_ablations(exp: Experiment, families=("temporal", "station_norm", "excess
     return pd.concat(out, ignore_index=True)
 
 
-def run_loso(X_bg, meta_bg, refs, n_train=10000, n_test=3000, seed=config.SEED, model_names=("ridge", "hist_gb"), fast=True):
+def run_loso(
+    X_bg, meta_bg, refs, n_train=10000, n_test=3000, seed=config.SEED, model_names=("ridge", "hist_gb"),
+    fast=True, station_aware=False, drop_families=(), mix_kwargs=None,
+):
     """Leave-one-site-out: train on mixtures from nine sites, test on the held-out site.
 
     Station normalisation for the held-out site falls back to the global median,
     as it would for an unseen station. Reference vessels stay split train/test.
     """
+    mix_kwargs = mix_kwargs or {}
     ref_split = assign_reference_splits(refs, (0.75, 0.0, 0.25), seed)
     refs_tr = [r for r in refs if ref_split[r.vessel_id] == "train"]
     refs_te = [r for r in refs if ref_split[r.vessel_id] == "test"]
@@ -172,12 +184,15 @@ def run_loso(X_bg, meta_bg, refs, n_train=10000, n_test=3000, seed=config.SEED, 
     for j, site in enumerate(sorted(meta_bg["station"].unique())):
         m_te = (meta_bg["station"] == site).to_numpy()
         mtr, mte = meta_bg.loc[~m_te].reset_index(drop=True), meta_bg.loc[m_te].reset_index(drop=True)
-        Xtr, ytr, ptr, itr = make_mixtures(X_bg[~m_te], mtr, refs_tr, n_train, seed=seed + j)
-        Xte, yte, pte, ite = make_mixtures(X_bg[m_te], mte, refs_te, n_test, seed=seed + 1000 + j)
-        fb = FeatureBuilder().fit(X_bg[~m_te], mtr, X_tune=Xtr, y_tune=ytr, meta_tune=itr)
+        Xtr, ytr, ptr, itr = make_mixtures(X_bg[~m_te], mtr, refs_tr, n_train, seed=seed + j, **mix_kwargs)
+        Xte, yte, pte, ite = make_mixtures(X_bg[m_te], mte, refs_te, n_test, seed=seed + 1000 + j, **mix_kwargs)
+        fb = FeatureBuilder(station_aware=station_aware).fit(X_bg[~m_te], mtr, X_tune=Xtr, y_tune=ytr, meta_tune=itr)
         Ftr, Fte = fb.transform(Xtr, itr), fb.transform(Xte, ite)
+        cols = columns_for(Ftr, drop_families)
+        Ftr, Fte = Ftr[cols], Fte[cols]
         rows.append({"site": site, "model": "constant", **regression_report(yte, np.full_like(yte, ytr.mean()))})
-        rows.append({"site": site, "model": "excess_baseline", **regression_report(yte, Fte["excess_share"])})
+        if "excess_share" in Fte:
+            rows.append({"site": site, "model": "excess_baseline", **regression_report(yte, Fte["excess_share"])})
         zoo = regressors(seed, fast=fast)
         for name in model_names:
             mdl = zoo[name].fit(Ftr, ytr)
@@ -187,15 +202,21 @@ def run_loso(X_bg, meta_bg, refs, n_train=10000, n_test=3000, seed=config.SEED, 
     return res, summary
 
 
-def fit_final_and_predict(X_bg, meta_bg, refs, X_test, meta_test, model_name="hist_gb", n_train=25000, seed=config.SEED, atb_sampler=None, fast=False):
+def fit_final_and_predict(
+    X_bg, meta_bg, refs, X_test, meta_test, model_name="hist_gb", n_train=25000, seed=config.SEED,
+    atb_sampler=None, fast=False, drop_families=(), mix_kwargs=None,
+):
     """Train on mixtures from all non-test background windows and predict the competition test set.
 
-    Test windows are used only for inference.
+    Test windows are used only for inference. Features are station-agnostic unless
+    the test metadata carries a station column.
     """
-    X, y, pres, info = make_mixtures(X_bg, meta_bg, refs, n_train, seed=seed + 7, atb_sampler=atb_sampler)
-    fb = FeatureBuilder().fit(X_bg, meta_bg, X_tune=X, y_tune=y, meta_tune=info)
+    station_aware = "station" in meta_test.columns
+    X, y, pres, info = make_mixtures(X_bg, meta_bg, refs, n_train, seed=seed + 7, atb_sampler=atb_sampler, **(mix_kwargs or {}))
+    fb = FeatureBuilder(station_aware=station_aware).fit(X_bg, meta_bg, X_tune=X, y_tune=y, meta_tune=info)
     F = fb.transform(X, info)
-    Ft = fb.transform(X_test, meta_test)
+    cols = columns_for(F, drop_families)
+    F, Ft = F[cols], fb.transform(X_test, meta_test)[cols]
     if model_name == "excess_baseline":
         share = Ft["excess_share"].to_numpy()
     else:
