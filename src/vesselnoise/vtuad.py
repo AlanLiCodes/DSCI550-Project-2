@@ -60,13 +60,20 @@ def read_registry(meta_dir) -> pd.DataFrame:
     }.items():
         c = _find_col(reg, *cands)
         out[std] = reg[c] if c else np.nan
+    # Registry paths look like "./vessel/12.wav" or "./background/3.wav"; stems repeat
+    # across the two folders, so the key is "<folder>/<stem>".
+    out["folder"] = out["path"].map(lambda p: Path(p).parent.name)
     out["stem"] = out["path"].map(lambda p: Path(p).stem)
+    out["key"] = out["folder"] + "/" + out["stem"]
     return out
 
 
 def index_wavs(root) -> dict:
-    """Map WAV file stem -> path for every .wav under ``root``."""
-    return {p.stem: p for p in Path(root).rglob("*.wav")}
+    """Map "<parent folder>/<stem>" -> path for every .wav under ``root``.
+
+    Strict clips unzip to .../strict_interval_wav/inclusion_4000_exclusion_6000/{vessel,background}/N.wav.
+    """
+    return {f"{p.parent.name}/{p.stem}": p for p in Path(root).rglob("*.wav")}
 
 
 def wav_minute_bands(path, minute_s: float = 60.0) -> np.ndarray:
@@ -100,12 +107,19 @@ def convert(vtuad_dir, out_dir, view: str = "strict", limit: int | None = None, 
     for i, r in enumerate(reg.itertuples()):
         if limit is not None and i >= limit:
             break
-        p = wavs.get(r.stem)
-        group = "background" if r.label == "background" else "vessel"
+        p = wavs.get(r.key)
+        # Dedicated background recordings live in background/. 22 clips under vessel/
+        # also carry label "background"; they are kept apart and not used as references.
+        if r.folder == "background":
+            group = "background"
+        elif r.label == "background":
+            group = "vessel_labelled_background"
+        else:
+            group = "vessel"
         if p is None:
             rows.append({**r._asdict(), "group": group, "status": "wav not found"})
             continue
-        target = out_dir / group / f"{r.stem}.csv"
+        target = out_dir / group / f"{r.folder}_{r.stem}.csv"
         if not target.exists():
             try:
                 bands, fs = wav_minute_bands(p)
@@ -157,11 +171,11 @@ def load_vtuad_references(converted_dir, min_minutes: int = 2, background="onc",
         t_peak = float(np.argmax(sub.sum(axis=1))) + 0.5
         track = passage_ranges(len(sub), DEFAULT_CPA_M, DEFAULT_SPEED_MS, t_peak).mean(axis=1)
         if pd.isna(r.mmsi):
-            mmsi = r.stem
+            mmsi = str(r.key)
         else:
             try:
                 mmsi = str(int(float(r.mmsi)))
             except ValueError:
                 mmsi = str(r.mmsi)
-        refs.append(Reference(vessel_id=r.stem, source=f"vtuad_{r.label}", lin=sub, range_m=track, group=f"mmsi_{mmsi}"))
+        refs.append(Reference(vessel_id=str(r.key), source=f"vtuad_{r.label}", lin=sub, range_m=track, group=f"mmsi_{mmsi}"))
     return refs

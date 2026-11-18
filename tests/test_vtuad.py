@@ -20,13 +20,14 @@ def test_convert_and_load_roundtrip(tmp_path):
     fs = 32000
     rng = np.random.default_rng(0)
     rows = []
-    for name, label, mmsi, amp in [("a", "tug", 1, 1.0), ("b", "tug", 1, 1.0), ("bg", "background", np.nan, 0.05)]:
-        d = root / "wav" / "strict" / ("background" if label == "background" else "vessel")
+    for name, label, mmsi, amp in [("0", "tug", 1, 1.0), ("1", "tug", 1, 1.0), ("0", "background", np.nan, 0.05)]:
+        folder = "background" if label == "background" else "vessel"
+        d = root / "wav" / "strict" / folder / "strict_interval_wav" / "inclusion_4000_exclusion_6000" / folder
         d.mkdir(parents=True, exist_ok=True)
         t = np.arange(fs * 150) / fs
         x = 0.05 * rng.normal(size=t.size) + amp * np.sin(2 * np.pi * 100 * t) * np.exp(-(((t - 75) / 30) ** 2))
         wavfile.write(d / f"{name}.wav", fs, (x / 4 * 32767).astype(np.int16))
-        rows.append({"label": label, "MMSI": mmsi, "path": f"{label}/{name}.wav", "utc_begin": "", "utc_end": ""})
+        rows.append({"label": label, "MMSI": mmsi, "path": f"./{folder}/{name}.wav", "utc_begin": "", "utc_end": ""})
     pd.DataFrame(rows).to_csv(root / "meta" / "metadata.csv", index=False)
     clips = convert(root, tmp_path / "conv", log=lambda *_: None)
     assert (clips["status"] == "ok").all() and (clips["minutes"] == 2).all()
