@@ -62,6 +62,7 @@ def parse_args():
     ap.add_argument("--n-test", type=int, default=5000)
     ap.add_argument("--p-zero", type=float, default=config.P_ZERO_ADDITION)
     ap.add_argument("--minute-dropout", type=float, default=config.MINUTE_DROPOUT_P, help="share of backgrounds with masked whole minutes")
+    ap.add_argument("--stretch-max", type=float, default=1.0, help="max time-stretch of references (1 = off)")
     ap.add_argument("--station-balance", type=float, default=0.5, help="0 = sample windows uniformly, 1 = stations uniformly")
     ap.add_argument("--station-aware", action="store_true", help="use station/hour features in experiments (not usable for Test.csv)")
     ap.add_argument("--drop-families", default="", help="comma-separated feature families to drop everywhere, e.g. level")
@@ -116,7 +117,11 @@ def main():
             print(f"[test] {len(X_test)} windows, missing cells {np.isnan(X_test).mean():.2%}, station column: {'station' in meta_test}")
     print("[schema]\n" + schema.describe())
     drop = tuple(f for f in args.drop_families.split(",") if f)
-    mix_kwargs = {"minute_dropout": (args.minute_dropout, config.MINUTE_DROPOUT_MAX), "station_balance": args.station_balance}
+    mix_kwargs = {
+        "minute_dropout": (args.minute_dropout, config.MINUTE_DROPOUT_MAX),
+        "station_balance": args.station_balance,
+        "stretch_range": (1.0, args.stretch_max),
+    }
 
     X_bg, meta_bg = build_windows(records)
     print(f"[windows] {len(X_bg)} background windows from {meta_bg['station'].nunique()} stations")

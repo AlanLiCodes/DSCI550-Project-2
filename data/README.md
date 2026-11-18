@@ -9,9 +9,11 @@ data/
     stations.csv, recorders.csv, DATA_DICTIONARY.md
   Test.csv                        # 1,500 rows: ID + 375 cols mMM_TOL_<f> -- inference only
   SampleSubmission.csv
-  references/                     # converted vessel passages (scripts/convert_reference_audio.py)
-    onc/*.csv                     # VTUAD v1.3.2 (ONC), the source the test additions derive from
-    hearmyship/*.csv
+  references/
+    vtuad/                        # scripts/convert_vtuad.py output: clips.csv, vessel/, background/
+                                  # VTUAD v1.3.2 (Yuan et al., doi:10.5281/zenodo.23037895, CC BY 4.0,
+                                  # from ONC Oceans 3.0) -- the source the test additions derive from
+    hearmyship/*.csv              # optional, scripts/convert_reference_audio.py
 ```
 
 Run `python scripts/inspect_data.py --records data/South_African_Real_Acoustics --test data/Test.csv`

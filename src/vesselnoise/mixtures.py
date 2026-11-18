@@ -25,6 +25,24 @@ def _loguniform(rng, lo, hi):
     return float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
 
 
+def stretch_reference(lin: np.ndarray, range_m: np.ndarray, factor: float):
+    """Time-stretch a minute-level passage by ``factor`` (>= 1) with linear interpolation.
+
+    The organisers state that they varied the time trajectories of the VTUAD
+    passages; strict VTUAD clips are short (median 3 min), so stretching lets a
+    passage occupy more of a 15-minute window.
+    """
+    T = lin.shape[0]
+    n = max(int(round(T * factor)), 1)
+    if n == T:
+        return lin, range_m
+    src = (np.arange(n) + 0.5) / n * T - 0.5
+    src = np.clip(src, 0, T - 1)
+    out = np.stack([np.interp(src, np.arange(T), lin[:, k]) for k in range(lin.shape[1])], axis=1)
+    rng_out = np.interp(src, np.arange(T), range_m)
+    return out, rng_out
+
+
 def place_reference(
     ref: Reference,
     rng: np.random.Generator,
@@ -32,11 +50,24 @@ def place_reference(
     cpa_range_m=config.CPA_RANGE_M,
     spreading_range=config.SPREADING_RANGE,
     peak_margin: int = 3,
+    stretch_range=(1.0, 1.0),
 ):
-    """Crop ``ref`` to ``minutes`` around its peak and move it to a new CPA distance.
+    """Optionally time-stretch ``ref``, crop it to ``minutes`` around its peak and move it to a new CPA distance.
 
+    ``stretch_range=(lo, hi)``: stretch factor drawn log-uniformly, capped so the
+    stretched passage is at most ``minutes`` long unless it already was longer.
     Returns (added_lin (minutes, 25), info dict).
     """
+    lo, hi = stretch_range
+    factor = 1.0
+    if hi > 1.0:
+        cap = max(minutes / max(ref.n_minutes, 1), 1.0)
+        hi_eff = min(hi, cap)
+        if hi_eff > lo:
+            factor = _loguniform(rng, max(lo, 1.0), hi_eff)
+    if factor != 1.0:
+        lin_s, rng_s = stretch_reference(ref.lin, ref.range_m, factor)
+        ref = Reference(ref.vessel_id, ref.source, lin_s, rng_s, ref.spreading, ref.group)
     broadband = np.nansum(ref.lin, axis=1)
     peak = int(np.nanargmax(broadband))
     peak_pos = int(rng.integers(peak_margin, minutes - peak_margin))
@@ -57,7 +88,7 @@ def place_reference(
     r_ref_f = np.nan_to_num(r_ref, nan=cpa_ref)
     gain_db = transmission_loss_db(r_ref_f, spreading=ref.spreading) - transmission_loss_db(r_new, spreading=k_new)
     added = seg * db_to_lin(gain_db)
-    info = {"cpa_m": cpa_new, "spreading": k_new, "peak_minute": peak_pos}
+    info = {"cpa_m": cpa_new, "spreading": k_new, "peak_minute": peak_pos, "stretch": factor}
     return added, info
 
 

@@ -14,7 +14,7 @@ metric is **1 − RMSE** on `share_added_vessel`.
 
 ```bash
 pip install -e ".[dev]"     # also: pip install pyarrow (parquet)
-pytest                      # 31 tests, ~5 s
+pytest                      # 35 tests, ~5 s
 ```
 
 Data layout (nothing under `data/` or `outputs/` is committed):
@@ -36,9 +36,10 @@ python scripts/inspect_data.py --records data/South_African_Real_Acoustics --tes
 python scripts/run_pipeline.py --records data/South_African_Real_Acoustics --test data/Test.csv \
     --sample-submission data/SampleSubmission.csv --loso --ablations --source-shift --out outputs/run1
 
-# 3. Once the vessel references are converted (see "References" below)
-python scripts/convert_reference_audio.py --in raw/vtuad --out data/references/onc
-python scripts/run_pipeline.py ... --refs-onc data/references/onc [--refs-hearmyship data/references/hearmyship]
+# 3. VTUAD references: download the record's audio + metadata from Zenodo, then
+bash scripts/setup_vtuad.sh          # copy next to where the data should live; verifies MD5s, unzips
+python scripts/convert_vtuad.py --vtuad-dir <vtuad dir> --out data/references/vtuad
+python scripts/run_pipeline.py ... --refs-vtuad data/references/vtuad [--stretch-max 4]
 ```
 
 `--synthetic` runs everything on stand-in data. Useful flags:
@@ -103,11 +104,44 @@ Nyquist set to NaN.
 - `Test.csv` is only passed to `transform` / `predict`.
 - The final model is chosen by blocked CV: the LOSO ranking (average of mean and worst site) when `--loso` is run, otherwise the validation score. It is never tuned against the public leaderboard.
 
-## Results on the real South African backgrounds (synthetic references)
+## Results on the real South African backgrounds
 
-Run `outputs/real_v1`: 20k train / 5k val / 5k local-test mixtures, station-agnostic
-features, synthetic vessel references. Scores are 1 − RMSE on held-out
-**mixtures**, not leaderboard scores.
+Scores are 1 − RMSE on held-out **mixtures** (held-out days and vessels), not leaderboard
+scores. Every run uses 20k train / 5k val / 5k local-test mixtures and station-agnostic features.
+
+### VTUAD references (current)
+
+`scripts/setup_vtuad.sh` → `scripts/convert_vtuad.py` gives 482 usable vessel passages
+from 172 hulls (strict-interval clips, ambient removed using the 16 dedicated ONC background
+recordings). Splits are by hull MMSI.
+
+| Run | Model | Val | Local test | LOSO mean / worst site |
+|---|---|---|---|---|
+| `v2a_vtuad` (no stretch) | histogram GB | **0.866** | **0.863** (0.849–0.877) | **0.860 / 0.738** (St Francis) |
+| | random forest | 0.859 | 0.853 | – |
+| | Ridge | 0.815 | 0.824 | 0.808 / 0.712 |
+| | excess-energy baseline | 0.639 | 0.643 | 0.626 / 0.317 |
+| | constant | 0.606 | 0.608 | 0.607 / 0.604 |
+| `v2b_vtuad_stretch` (stretch ≤ 4×) | histogram GB | 0.843 | 0.843 | 0.838 / 0.693 |
+| `v2c` (stretch ≤ 4×, no level / spectral) | histogram GB | 0.843 | 0.841 | 0.832 / 0.719 |
+
+**Does VTUAD help? A like-for-like check.** Both models are tested on the same mixtures
+built from VTUAD hulls neither has seen (10k train / 4k test, fast models, saved to
+`outputs/reference_realism_check.csv`):
+
+| Trained on | histogram GB | random forest | Ridge |
+|---|---|---|---|
+| synthetic references | 0.757 | 0.763 | 0.692 |
+| VTUAD references (other hulls) | **0.850** | 0.842 | 0.819 |
+
+Notes:
+
+- **Stretch scores are not comparable to the no-stretch run.** With stretching, the local test mixtures are stretched too, which is a harder task. Whether the organisers' "varied time trajectories" means stretching can only be settled on the leaderboard. Submit `v2a`, then `v2b`, and compare.
+- With VTUAD references, dropping absolute level/spectral features no longer helps (0.841 vs 0.843).
+- The VTUAD vessel signal is often weak: the median clip is only 3–9 dB above the ONC ambient, and 20% of clips are within 1 dB of it. Strict clips are short (median 3 min, max 23).
+- St Francis is consistently the hardest site, with Fish Hoek next. Both are 5-minute duty-cycled recorders.
+
+### Synthetic references (`real_v1`, for reference)
 
 | Model | Val | Local test (95% day-block CI) | LOSO mean / worst site |
 |---|---|---|---|
@@ -115,17 +149,11 @@ features, synthetic vessel references. Scores are 1 − RMSE on held-out
 | excess-energy baseline | 0.556 | 0.561 (0.538–0.583) | 0.535 / 0.308 |
 | Ridge | 0.762 | 0.764 (0.755–0.772) | 0.754 / 0.708 |
 | random forest | 0.828 | 0.814 (0.802–0.825) | – |
-| histogram GB | **0.839** | **0.828** (0.817–0.837) | **0.816 / 0.720** (St Francis) |
+| histogram GB | 0.839 | 0.828 (0.817–0.837) | 0.816 / 0.720 |
 
-Presence score (logistic regression): ROC AUC 0.889 and PR AUC 0.973 on the local test split.
-
-Takeaways:
-
-1. **The label-free excess baseline does not work on real backgrounds.** It scores below the constant model, and 0.31 at Cape Recife and Riy Banks. Real ambient noise varies too much within 15 minutes for the quiet-minute estimate to work. It stays in as a feature, but its ablation shows it adds nothing (0.8282 vs 0.8281).
-2. **Temporal shape is the most useful feature family.** Dropping it costs 0.042 on local test. Dropping absolute `level` (+0.008) or `spectral` (+0.008) **improves** the score, so the model is fitting station loudness. Try `--drop-families level,spectral` next.
-3. **Reference realism matters more than anything else.** Trained on one synthetic reference type and tested on the other, every model falls below the constant (0.47–0.57). Getting VTUAD passages in is the top priority.
-4. Daily residual autocorrelation is small at lags 1–2 (0.02, −0.03), which supports the one-day buffer.
-5. `outputs/real_v1/submission.csv` (histogram GB, chosen by LOSO): mean predicted share 0.28, which is consistent with the leaderboard bound above. Its leaderboard score has not been recorded yet.
+Ablations (histogram GB, synthetic references): dropping temporal shape costs 0.042;
+dropping absolute level (+0.008) or spectral (+0.008) features slightly improved the score.
+Daily residual autocorrelation is small at lags 1–2 (0.02, −0.03), which supports the one-day buffer.
 
 ## Status against the proposal timeline
 
@@ -133,7 +161,7 @@ Takeaways:
 |---|---|---|
 | Data dictionary check (`inspect_data.py`) | A | Done on the real archive and Test.csv (findings above) |
 | Cleaning, windowing, excess-energy baseline | A | Done; the baseline is weak on real data (see results) |
-| External audio access and licences; conversion | B | Converter ready. **Download VTUAD v1.3.2 (CC BY 4.0) first**, then HearMyShip; declare both on the forum |
+| External audio access and licences; conversion | B | VTUAD v1.3.2 downloaded, verified and converted (482 passages, 172 hulls). Still to do: declare it on the forum; HearMyShip optional |
 | Controlled mixtures, feature extraction | B | Implemented (synthetic references until real ones are converted) |
 | Constant, Ridge, RF, GB, evidence classifier | C | Implemented |
 | Limited tuning | C | To do (Nov 19 – Dec 2): feature-family drops, ATB / p_zero prior, GB depth |

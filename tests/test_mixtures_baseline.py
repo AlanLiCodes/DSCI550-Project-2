@@ -107,3 +107,28 @@ def test_excess_baseline_ranks_additions():
     pred = bl.predict(Xm, info)
     assert np.corrcoef(pred, y)[0, 1] > 0.6
     assert pred[y == 0].mean() < 0.1
+
+
+def test_stretch_reference_preserves_shape_and_peak():
+    from vesselnoise.mixtures import stretch_reference
+
+    lin = np.zeros((3, 25))
+    lin[1] = 10.0
+    out, r = stretch_reference(lin, np.array([300.0, 100.0, 300.0]), 3.0)
+    assert out.shape == (9, 25) and r.shape == (9,)
+    assert np.argmax(out[:, 0]) == 4 and out.max() == pytest.approx(10.0)
+
+
+def test_place_reference_stretch_spreads_short_passage():
+    from vesselnoise.reference import Reference
+
+    rng = np.random.default_rng(0)
+    lin = np.zeros((3, 25))
+    lin[1] = 1.0
+    ref = Reference("v", "vtuad_tug", lin, np.array([500.0, 100.0, 500.0]))
+    widths = []
+    for _ in range(30):
+        added, info = place_reference(ref, rng, stretch_range=(1.0, 5.0), cpa_range_m=(100, 100.0001))
+        widths.append((added.sum(axis=1) > 0).sum())
+        assert 1.0 <= info["stretch"] <= 5.0
+    assert max(widths) > 3
