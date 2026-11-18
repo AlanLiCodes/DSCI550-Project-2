@@ -1,0 +1,20 @@
+# Competition data and external recordings are not committed (size + licence terms)
+data/*
+!data/README.md
+outputs/
+*.wav
+*.flac
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
