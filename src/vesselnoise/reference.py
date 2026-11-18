@@ -29,6 +29,11 @@ class Reference:
     lin: np.ndarray  # (T, 25) background-subtracted received energy per minute
     range_m: np.ndarray  # (T,) approximate range at which each minute was recorded
     spreading: float = 20.0
+    group: str | None = None  # split unit (e.g. hull MMSI); defaults to vessel_id
+
+    def __post_init__(self):
+        if self.group is None:
+            self.group = self.vessel_id
 
     @property
     def n_minutes(self) -> int:

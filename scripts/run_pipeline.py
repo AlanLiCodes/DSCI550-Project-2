@@ -41,6 +41,7 @@ from vesselnoise.pipeline import (  # noqa: E402
     run_loso,
 )
 from vesselnoise.reference import load_reference_dir, synthetic_reference_set  # noqa: E402
+from vesselnoise.vtuad import load_vtuad_references  # noqa: E402
 from vesselnoise.splits import daily_residual_autocorr  # noqa: E402
 from vesselnoise.synth import synthetic_records, synthetic_test  # noqa: E402
 from vesselnoise.windows import build_windows, windows_from_long  # noqa: E402
@@ -52,7 +53,8 @@ def parse_args():
     ap.add_argument("--test", help="competition test CSV (inference only)")
     ap.add_argument("--sample-submission", help="SampleSubmission.csv to copy column order / IDs from")
     ap.add_argument("--refs-hearmyship", help="dir of converted HearMyShip passages")
-    ap.add_argument("--refs-onc", help="dir of converted ONC passages")
+    ap.add_argument("--refs-onc", help="dir of converted ONC passages (generic per-clip CSVs)")
+    ap.add_argument("--refs-vtuad", help="output dir of scripts/convert_vtuad.py (clips.csv + vessel/ + background/)")
     ap.add_argument("--synthetic", action="store_true", help="use synthetic stand-in records/test/references")
     ap.add_argument("--nrows", type=int, help="read only the first N records (debugging)")
     ap.add_argument("--n-train", type=int, default=20000)
@@ -79,6 +81,8 @@ def load_refs(args):
         refs += load_reference_dir(args.refs_hearmyship, "hearmyship")
     if args.refs_onc:
         refs += load_reference_dir(args.refs_onc, "onc")
+    if args.refs_vtuad:
+        refs += load_vtuad_references(args.refs_vtuad)
     if not refs:
         print("[refs] no converted references given -> using SYNTHETIC references (development only)")
         refs = synthetic_reference_set(seed=args.seed)

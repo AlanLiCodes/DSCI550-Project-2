@@ -42,20 +42,22 @@ def chronological_split(meta: pd.DataFrame, fracs=(0.6, 0.2, 0.2), buffer_days: 
 def assign_reference_splits(refs, fracs=(0.6, 0.2, 0.2), seed: int = config.SEED) -> dict:
     """Each source vessel (and every clip derived from it) belongs to exactly one split.
 
-    Assignment is stratified by reference source.
+    Splitting is by ``Reference.group`` (the hull MMSI for VTUAD, so repeat passages
+    of one tug stay together) and stratified by reference source. Returns
+    vessel_id -> split.
     """
     rng = np.random.default_rng(seed)
-    out = {}
-    by_source: dict[str, list[str]] = {}
+    by_source: dict[str, set] = {}
     for r in refs:
-        by_source.setdefault(r.source, []).append(r.vessel_id)
-    for ids in by_source.values():
-        ids = list(rng.permutation(sorted(set(ids))))
-        n = len(ids)
+        by_source.setdefault(r.source, set()).add(r.group)
+    group_split = {}
+    for groups in by_source.values():
+        groups = [g for g in rng.permutation(sorted(groups)) if g not in group_split]
+        n = len(groups)
         c1, c2 = int(round(fracs[0] * n)), int(round((fracs[0] + fracs[1]) * n))
-        for i, v in enumerate(ids):
-            out[v] = "train" if i < c1 else ("val" if i < c2 else "test")
-    return out
+        for i, g in enumerate(groups):
+            group_split[g] = "train" if i < c1 else ("val" if i < c2 else "test")
+    return {r.vessel_id: group_split[r.group] for r in refs}
 
 
 def leave_one_site_out(stations):
