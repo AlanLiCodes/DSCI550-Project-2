@@ -148,6 +148,7 @@ Notes:
 | starter constant 0.1 (benchmark) | 0.7539 | – |
 | `v2a_vtuad` (ONC ambient subtracted, no stretch) | 0.7388 | 0.537 |
 | `v2b_vtuad_stretch` (stretch ≤ 4×) | 0.7161 | 0.541 |
+| `v4_loud_busy` (raw clips, ATB −20 to +10, loudness + busy-background augmentation) | **0.7738** | 0.530 |
 
 Local scores of about 0.86 did **not** transfer, so the mixtures did not match how the test windows were built.
 Diagnostics on the test *inputs* (no labels; `scripts/diagnose_test_shift.py`):
@@ -189,6 +190,12 @@ Busy backgrounds account for the change; loudness augmentation on its own does l
 `v4_loud_busy` (both, ATB −20 to +10 dB, histogram GB) scores 0.823 on its own augmented held-out split. Its
 submission averages 0.244 (median 0.194), against 0.320 for v3a (correlation 0.94).
 St Francis is still a false-positive site (about 0.2 on clean background).
+
+**Leaderboard: 0.7738**, the first score above the 0.7539 benchmark (v2a: 0.7388). Combining the
+benchmark with the three scored submissions bounds the public test label mean at ≥ 0.07. If
+it is about 0.10, v4's predictions correlate about 0.7 with the labels and the gain came mostly
+from calibration (a lower mean). An ideal linear recalibration of v4 would score 0.80–0.85,
+depending on the true mean, so calibration is still the biggest lever.
 
 ### Synthetic references (`real_v1`, for reference)
 
