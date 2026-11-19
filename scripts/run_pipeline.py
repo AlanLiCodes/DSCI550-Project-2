@@ -57,7 +57,7 @@ def parse_args():
     ap.add_argument("--refs-vtuad", help="output dir of scripts/convert_vtuad.py (clips.csv + vessel/ + background/)")
     ap.add_argument("--vtuad-ambient", default="none", choices=["none", "onc", "own"],
                     help="ambient handling for VTUAD clips; 'none' keeps clips as recorded, like the organisers' additions")
-    ap.add_argument("--atb-range", default="-20,20", help="addition-to-background ratio range in dB, e.g. -20,10")
+    ap.add_argument("--atb-range", default="-20,5", help="addition-to-background ratio range in dB, e.g. -20,10")
     ap.add_argument("--synthetic", action="store_true", help="use synthetic stand-in records/test/references")
     ap.add_argument("--nrows", type=int, help="read only the first N records (debugging)")
     ap.add_argument("--n-train", type=int, default=20000)
