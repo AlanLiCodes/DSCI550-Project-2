@@ -69,6 +69,7 @@ def test_experiment_end_to_end_beats_constant(pool):
                 vb = set(exp.splits[b].info["vessel_id"].dropna())
                 assert not va & vb
     res, _, _ = evaluate_models(exp, fast=True, with_ci=False)
-    test = res[res["split"] == "test"].set_index("model")["score"]
-    assert test["hist_gb"] > test["constant"] + 0.2
+    rmse = res[res["split"] == "test"].set_index("model")["rmse"]
+    # at least halve the constant model's error (independent of the label prior's spread)
+    assert rmse["hist_gb"] < 0.5 * rmse["constant"]
     assert test["excess_baseline"] > test["constant"]
