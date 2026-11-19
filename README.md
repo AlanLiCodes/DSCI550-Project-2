@@ -14,7 +14,7 @@ metric is **1 − RMSE** on `share_added_vessel`.
 
 ```bash
 pip install -e ".[dev]"     # also: pip install pyarrow (parquet)
-pytest                      # 35 tests, ~5 s
+pytest                      # 38 tests, ~7 s
 ```
 
 Data layout (nothing under `data/` or `outputs/` is committed):
@@ -159,6 +159,36 @@ Diagnostics on the test *inputs* (no labels; `scripts/diagnose_test_shift.py`):
 
 Next candidates: `v3a_raw_atb-20to10` (raw clips, natural station mix, ATB −20 to +10 dB) and
 `v3b_raw_atb-20to20`. Local histogram GB scores: 0.894 / 0.896 on held-out days and hulls.
+
+### Loudness and busy-background augmentation (v4)
+
+Why v3a still over-predicts: on clean held-out backgrounds it predicts 0.02, but on
+Test.csv windows it averages 0.33, with 58% of windows above 0.2. Test windows are much louder and busier than
+the released backgrounds (median 2–8 kHz level 84.8 vs ~74 dB). The model reads that
+variability as added vessel, though natural ship traffic counts as background (label 0).
+
+Two augmentations in `make_mixtures` (CLI flags, all off by default):
+
+- **Loudness:** `--gain-aug 10 --tilt-aug 6` (random ±10 dB background gain, ±6 dB/decade
+  tilt) and `--ref-tilt-aug 6 --ref-jitter 1` (random channel on the added passage).
+  Labels stay exact because the addition is scaled against the augmented background.
+- **Busy backgrounds:** `--busy-p 0.4 --busy-atb=-15,5` adds a second VTUAD passage to
+  40% of backgrounds *as background*, so a ship being present is not enough to predict added energy.
+
+Comparison (`scripts/compare_augmentations.py`; same held-out mixtures for all; test
+inputs only, no labels):
+
+| Augmentation | Plain held-out | Augmented held-out | Clean-bg prediction | Test prediction mean / median | Test > 0.2 |
+|---|---|---|---|---|---|
+| none (v3a) | 0.897 | 0.801 | 0.024 | 0.331 / 0.278 | 58% |
+| loudness only | 0.892 | 0.802 | 0.030 | 0.328 / 0.273 | 58% |
+| busy only | 0.859 | 0.820 | 0.025 | 0.248 / 0.193 | 49% |
+| both | 0.853 | 0.824 | 0.030 | 0.247 / 0.191 | 48% |
+
+Busy backgrounds account for the change; loudness augmentation on its own does little.
+`v4_loud_busy` (both, ATB −20 to +10 dB, histogram GB) scores 0.823 on its own augmented held-out split. Its
+submission averages 0.244 (median 0.194), against 0.320 for v3a (correlation 0.94).
+St Francis is still a false-positive site (about 0.2 on clean background).
 
 ### Synthetic references (`real_v1`, for reference)
 

@@ -66,6 +66,12 @@ def parse_args():
     ap.add_argument("--p-zero", type=float, default=config.P_ZERO_ADDITION)
     ap.add_argument("--minute-dropout", type=float, default=config.MINUTE_DROPOUT_P, help="share of backgrounds with masked whole minutes")
     ap.add_argument("--stretch-max", type=float, default=1.0, help="max time-stretch of references (1 = off)")
+    ap.add_argument("--gain-aug", type=float, default=0.0, help="random background gain, +-dB (loudness augmentation)")
+    ap.add_argument("--tilt-aug", type=float, default=0.0, help="random background spectral tilt, +-dB/decade")
+    ap.add_argument("--ref-tilt-aug", type=float, default=0.0, help="random channel tilt on added passages, +-dB/decade")
+    ap.add_argument("--ref-jitter", type=float, default=0.0, help="per-band channel jitter on added passages, dB sd")
+    ap.add_argument("--busy-p", type=float, default=0.0, help="share of backgrounds given an extra passage counted as background")
+    ap.add_argument("--busy-atb", default="-15,5", help="ATB range (dB) of that background passage")
     ap.add_argument("--station-balance", type=float, default=0.0, help="0 = sample windows uniformly, 1 = stations uniformly")
     ap.add_argument("--station-aware", action="store_true", help="use station/hour features in experiments (not usable for Test.csv)")
     ap.add_argument("--drop-families", default="", help="comma-separated feature families to drop everywhere, e.g. level")
@@ -125,6 +131,12 @@ def main():
         "station_balance": args.station_balance,
         "stretch_range": (1.0, args.stretch_max),
         "atb_range_db": tuple(float(v) for v in args.atb_range.split(",")),
+        "gain_db": args.gain_aug,
+        "bg_tilt_db": args.tilt_aug,
+        "ref_tilt_db": args.ref_tilt_aug,
+        "ref_jitter_db": args.ref_jitter,
+        "busy_p": args.busy_p,
+        "busy_atb_range_db": tuple(float(v) for v in args.busy_atb.split(",")),
     }
 
     X_bg, meta_bg = build_windows(records)

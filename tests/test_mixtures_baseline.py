@@ -4,7 +4,7 @@ import pytest
 
 from vesselnoise import config
 from vesselnoise.baseline import ExcessEnergyBaseline
-from vesselnoise.energy import db_to_lin
+from vesselnoise.energy import db_to_lin, share_from_parts
 from vesselnoise.mixtures import make_mixtures, mix_one, place_reference, share_from_atb
 from vesselnoise.propagation import thorp_absorption_db_per_km, transmission_loss_db
 from vesselnoise.reference import audio_to_minute_bands, reference_from_bands, synthetic_reference
@@ -132,3 +132,38 @@ def test_place_reference_stretch_spreads_short_passage():
         widths.append((added.sum(axis=1) > 0).sum())
         assert 1.0 <= info["stretch"] <= 5.0
     assert max(widths) > 3
+
+
+def _refs(kind="large", n=5):
+    return [synthetic_reference(np.random.default_rng(i), f"v{i}", kind) for i in range(n)]
+
+
+def test_gain_tilt_augmentation_keeps_labels_exact():
+    X, meta = _bg_pool(100)
+    Xm, y, present, info = make_mixtures(X, meta, _refs(), 300, seed=4, gain_db=10, bg_tilt_db=6, ref_tilt_db=6, ref_jitter_db=1)
+    # labels still follow the ATB exactly (ATB is defined against the augmented background)
+    assert np.allclose(y[present == 1], share_from_atb(info["atb_db"][present == 1]), atol=1e-6)
+    # backgrounds really were shifted: zero-addition windows now spread over ~+-10 dB
+    zero_levels = np.nanmean(Xm[y == 0], axis=(1, 2))
+    assert zero_levels.max() - zero_levels.min() > 8
+
+
+def test_busy_vessel_counts_as_background():
+    X, meta = _bg_pool(100)
+    Xm, y, _, info = make_mixtures(X, meta, _refs(), 200, seed=5, p_zero=1.0, busy_p=1.0, busy_atb_range_db=(0, 0))
+    assert (y == 0).all() and info["busy"].all()
+    # an equal-energy passage was added to each background -> windows ~3 dB louder on average
+    lift = np.nanmean(db_to_lin(Xm)) / np.nanmean(db_to_lin(X))
+    assert 1.5 < lift < 2.5
+
+
+def test_busy_background_lowers_share_for_same_added_energy():
+    from vesselnoise.mixtures import add_busy_vessel
+
+    rng = np.random.default_rng(6)
+    bg = 80 + rng.normal(0, 1, (15, 25))
+    busy, _ = add_busy_vessel(bg, _refs(), rng, (0, 0))
+    added = db_to_lin(np.full((15, 25), 75.0))
+    s_plain = share_from_parts(added, db_to_lin(bg) + added, axis=None)
+    s_busy = share_from_parts(added, db_to_lin(busy) + added, axis=None)
+    assert s_busy < s_plain

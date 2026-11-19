@@ -120,6 +120,33 @@ def drop_minutes(bg_db: np.ndarray, rng: np.random.Generator, p: float, max_minu
     return out
 
 
+_LOG_F_REL = np.log10(config.BAND_CENTRES_HZ / 1000.0)  # decades relative to 1 kHz
+
+
+def gain_tilt_db(rng: np.random.Generator, gain_db: float, tilt_db_per_decade: float, jitter_db: float = 0.0):
+    """Random per-band dB offset: uniform global gain + uniform spectral tilt (pivot 1 kHz) + jitter."""
+    g = rng.uniform(-gain_db, gain_db) if gain_db > 0 else 0.0
+    t = rng.uniform(-tilt_db_per_decade, tilt_db_per_decade) if tilt_db_per_decade > 0 else 0.0
+    off = g + t * _LOG_F_REL
+    if jitter_db > 0:
+        off = off + rng.normal(0.0, jitter_db, size=off.shape)
+    return off
+
+
+def add_busy_vessel(bg_db: np.ndarray, refs, rng, atb_range_db, **place_kwargs):
+    """Add a vessel passage to a background *as background* (it is not part of the label).
+
+    Real test backgrounds can already contain vessels; this teaches the model that a
+    ship being present does not by itself mean energy was added.
+    Returns (new background dB, atb used).
+    """
+    ref = refs[int(rng.integers(len(refs)))]
+    added, _ = place_reference(ref, rng, minutes=bg_db.shape[0], **place_kwargs)
+    atb = float(rng.uniform(*atb_range_db))
+    busy_db, _, _ = mix_one(bg_db, added, atb)
+    return busy_db, atb
+
+
 def make_mixtures(
     X_bg: np.ndarray,
     meta_bg: pd.DataFrame,
@@ -131,6 +158,13 @@ def make_mixtures(
     atb_sampler=None,
     minute_dropout=(config.MINUTE_DROPOUT_P, config.MINUTE_DROPOUT_MAX),
     station_balance: float = 0.5,
+    gain_db: float = 0.0,
+    bg_tilt_db: float = 0.0,
+    ref_tilt_db: float = 0.0,
+    ref_jitter_db: float = 0.0,
+    busy_p: float = 0.0,
+    busy_atb_range_db=(-15.0, 5.0),
+    busy_refs=None,
     **place_kwargs,
 ):
     """Build ``n`` labelled mixtures.
@@ -145,9 +179,22 @@ def make_mixtures(
     window weight = count(station) ** -station_balance (0 = uniform over windows,
     1 = uniform over stations). Richards Bay holds ~65% of released windows.
 
+    Loudness augmentation (all default off):
+    * ``gain_db`` / ``bg_tilt_db``: random global gain (+-dB) and spectral tilt
+      (+-dB per decade, pivot 1 kHz) applied to the *background* before mixing, so
+      absolute level and spectral balance stop being a proxy for added vessel.
+      Because the addition is scaled relative to the background, labels stay exact.
+    * ``ref_tilt_db`` / ``ref_jitter_db``: random channel tilt and per-band jitter
+      applied to the placed passage ("relative acoustic channel ... varied").
+
+    Busy-background augmentation: with probability ``busy_p`` a second passage
+    (from ``busy_refs``, default ``refs``) is added to the background at an ATB
+    drawn from ``busy_atb_range_db`` and counted as *background* (label 0 part).
+
     Returns X_mix (n, 15, 25) dB, y_share (n,), y_present (n,), info DataFrame
     (carries station/day/hour of the background so splits stay valid).
     """
+    busy_refs = busy_refs if busy_refs is not None else refs
     rng = np.random.default_rng(seed)
     minutes = X_bg.shape[1]
     X = np.empty((n, minutes, X_bg.shape[2]))
@@ -162,12 +209,19 @@ def make_mixtures(
         bg_idx = rng.integers(0, len(X_bg), size=n)
     for i, b in enumerate(bg_idx):
         bg = drop_minutes(np.asarray(X_bg[b], dtype=float), rng, *minute_dropout)
-        row = {"bg_index": int(b), "vessel_id": None, "source": None, "atb_db": np.nan, "cpa_m": np.nan}
+        row = {"bg_index": int(b), "vessel_id": None, "source": None, "atb_db": np.nan, "cpa_m": np.nan, "busy": 0}
+        if gain_db > 0 or bg_tilt_db > 0:
+            bg = bg + gain_tilt_db(rng, gain_db, bg_tilt_db)[None, :]
+        if busy_refs and busy_p > 0 and rng.random() < busy_p:
+            bg, _ = add_busy_vessel(bg, busy_refs, rng, busy_atb_range_db, **place_kwargs)
+            row["busy"] = 1
         if not refs or rng.random() < p_zero:
             X[i] = bg
         else:
             ref = refs[int(rng.integers(len(refs)))]
             added, info = place_reference(ref, rng, minutes=minutes, **place_kwargs)
+            if ref_tilt_db > 0 or ref_jitter_db > 0:
+                added = added * db_to_lin(gain_tilt_db(rng, 0.0, ref_tilt_db, ref_jitter_db))[None, :]
             atb = float(atb_sampler(rng)) if atb_sampler else float(rng.uniform(*atb_range_db))
             X[i], _, y[i] = mix_one(bg, added, atb)
             present[i] = int(y[i] > 0)
