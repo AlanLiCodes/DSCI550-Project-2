@@ -55,6 +55,9 @@ def parse_args():
     ap.add_argument("--refs-hearmyship", help="dir of converted HearMyShip passages")
     ap.add_argument("--refs-onc", help="dir of converted ONC passages (generic per-clip CSVs)")
     ap.add_argument("--refs-vtuad", help="output dir of scripts/convert_vtuad.py (clips.csv + vessel/ + background/)")
+    ap.add_argument("--vtuad-ambient", default="none", choices=["none", "onc", "own"],
+                    help="ambient handling for VTUAD clips; 'none' keeps clips as recorded, like the organisers' additions")
+    ap.add_argument("--atb-range", default="-20,20", help="addition-to-background ratio range in dB, e.g. -20,10")
     ap.add_argument("--synthetic", action="store_true", help="use synthetic stand-in records/test/references")
     ap.add_argument("--nrows", type=int, help="read only the first N records (debugging)")
     ap.add_argument("--n-train", type=int, default=20000)
@@ -63,7 +66,7 @@ def parse_args():
     ap.add_argument("--p-zero", type=float, default=config.P_ZERO_ADDITION)
     ap.add_argument("--minute-dropout", type=float, default=config.MINUTE_DROPOUT_P, help="share of backgrounds with masked whole minutes")
     ap.add_argument("--stretch-max", type=float, default=1.0, help="max time-stretch of references (1 = off)")
-    ap.add_argument("--station-balance", type=float, default=0.5, help="0 = sample windows uniformly, 1 = stations uniformly")
+    ap.add_argument("--station-balance", type=float, default=0.0, help="0 = sample windows uniformly, 1 = stations uniformly")
     ap.add_argument("--station-aware", action="store_true", help="use station/hour features in experiments (not usable for Test.csv)")
     ap.add_argument("--drop-families", default="", help="comma-separated feature families to drop everywhere, e.g. level")
     ap.add_argument("--loso", action="store_true", help="leave-one-site-out cross-validation")
@@ -83,7 +86,7 @@ def load_refs(args):
     if args.refs_onc:
         refs += load_reference_dir(args.refs_onc, "onc")
     if args.refs_vtuad:
-        refs += load_vtuad_references(args.refs_vtuad)
+        refs += load_vtuad_references(args.refs_vtuad, background=args.vtuad_ambient)
     if not refs:
         print("[refs] no converted references given -> using SYNTHETIC references (development only)")
         refs = synthetic_reference_set(seed=args.seed)
@@ -121,6 +124,7 @@ def main():
         "minute_dropout": (args.minute_dropout, config.MINUTE_DROPOUT_MAX),
         "station_balance": args.station_balance,
         "stretch_range": (1.0, args.stretch_max),
+        "atb_range_db": tuple(float(v) for v in args.atb_range.split(",")),
     }
 
     X_bg, meta_bg = build_windows(records)

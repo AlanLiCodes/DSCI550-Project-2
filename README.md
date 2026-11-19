@@ -141,6 +141,25 @@ Notes:
 - The VTUAD vessel signal is often weak: the median clip is only 3–9 dB above the ONC ambient, and 20% of clips are within 1 dB of it. Strict clips are short (median 3 min, max 23).
 - St Francis is consistently the hardest site, with Fish Hoek next. Both are 5-minute duty-cycled recorders.
 
+### Leaderboard results and what they revealed
+
+| Submission | Public score | Score ROC AUC |
+|---|---|---|
+| starter constant 0.1 (benchmark) | 0.7539 | – |
+| `v2a_vtuad` (ONC ambient subtracted, no stretch) | 0.7388 | 0.537 |
+| `v2b_vtuad_stretch` (stretch ≤ 4×) | 0.7161 | 0.541 |
+
+Local scores of about 0.86 did **not** transfer, so the mixtures did not match how the test windows were built.
+Diagnostics on the test *inputs* (no labels; `scripts/diagnose_test_shift.py`):
+
+- **The mixtures and test windows were easy to tell apart** (classifier AUC 0.96). Test windows have more high-frequency activity and less extreme short peaks: at the 90th percentile, peak minus median is 14 dB in the test against 23 dB in the mixtures.
+- **Test backgrounds look like Richards Bay** (90% of windows by spectral and temporal shape), while station balancing had down-weighted it. Balancing is now off by default.
+- **The starter notes that "passage references may contain ambient sound".** Adding raw VTUAD clips, rather than ambient-subtracted ones, lowers the classifier AUC (0.94 → 0.90). A quieter ATB range (−20 to +10 dB) lowers it further (0.88). Stretching raises it (0.92), which agrees with v2b scoring worse. `--vtuad-ambient none` is now the default.
+- **Calibration matters as much as the model.** Combining the 0.1 benchmark with our scores: if the test label mean is about 0.10, the v2a predictions correlate about 0.8 with the labels but sit too high (their mean is 0.31).
+
+Next candidates: `v3a_raw_atb-20to10` (raw clips, natural station mix, ATB −20 to +10 dB) and
+`v3b_raw_atb-20to20`. Local histogram GB scores: 0.894 / 0.896 on held-out days and hulls.
+
 ### Synthetic references (`real_v1`, for reference)
 
 | Model | Val | Local test (95% day-block CI) | LOSO mean / worst site |

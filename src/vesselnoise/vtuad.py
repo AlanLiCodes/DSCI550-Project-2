@@ -150,9 +150,10 @@ def load_vtuad_references(converted_dir, min_minutes: int = 2, background="onc",
     """Build References from converted VTUAD clips.
 
     * ``group`` (split unit) is the hull MMSI, so one vessel never spans two splits.
-    * Ambient removal: the ONC background-class median per band (``background="onc"``),
-      falling back to the clip's own low quantile. Many strict clips contain the vessel
-      for their whole duration, so an own-quantile estimate would remove vessel energy.
+    * Ambient handling: ``background="onc"`` subtracts the ONC background-class median per
+      band; ``"own"`` subtracts the clip's own low quantile; ``"none"`` keeps the clip as
+      recorded. The organisers note that "passage references may contain ambient sound",
+      i.e. their additions appear to be raw clips, so ``"none"`` matches the challenge.
     """
     converted_dir = Path(converted_dir)
     clips = pd.read_csv(converted_dir / "clips.csv")
@@ -161,7 +162,9 @@ def load_vtuad_references(converted_dir, min_minutes: int = 2, background="onc",
     refs = []
     for r in clips.itertuples():
         lin = pd.read_csv(converted_dir / r.csv).to_numpy(dtype=float)
-        if bg is not None:
+        if background == "none":
+            sub = lin.copy()
+        elif bg is not None:
             sub = np.clip(lin - bg[None, :], 0.0, None)
         else:
             sub = np.clip(lin - np.nanquantile(lin, own_quantile, axis=0, keepdims=True), 0.0, None)
