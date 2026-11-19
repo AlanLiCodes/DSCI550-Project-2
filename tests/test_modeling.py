@@ -72,4 +72,4 @@ def test_experiment_end_to_end_beats_constant(pool):
     rmse = res[res["split"] == "test"].set_index("model")["rmse"]
     # at least halve the constant model's error (independent of the label prior's spread)
     assert rmse["hist_gb"] < 0.5 * rmse["constant"]
-    assert test["excess_baseline"] > test["constant"]
+    assert rmse["excess_baseline"] < rmse["constant"]
