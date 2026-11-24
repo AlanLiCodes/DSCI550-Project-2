@@ -150,6 +150,7 @@ Notes:
 | `v2b_vtuad_stretch` (stretch ≤ 4×) | 0.7161 | 0.541 |
 | `v4_loud_busy` (raw clips, ATB −20 to +10, loudness + busy-background augmentation) | 0.7738 | 0.530 |
 | `v6_cnn` (per-cell CNN, ATB −20 to +5, transient masking, hard negatives, all non-test days) | **0.7835** | 0.505 |
+| `v7_cnn` (v6 + edge-only missing minutes, peak anywhere, no background gain/tilt) | 0.7742 | 0.503 |
 
 Local scores of about 0.86 did **not** transfer, so the mixtures did not match how the test windows were built.
 Diagnostics on the test *inputs* (no labels; `scripts/diagnose_test_shift.py`):
@@ -312,6 +313,15 @@ correlation 0.90 with v6. Held-out check, with the CNN trained on the training s
 
 v7 loses almost nothing on the old design, and the St Francis false-positive fix holds
 (0.046, against 0.159 before the CNN).
+
+**Leaderboard: v7 scored 0.7742, below v6 (0.7835).** Making the mixtures harder to tell apart
+from test windows (AUC 0.918 → 0.863) did not improve the score. Either one of the three changes
+hurt (most likely candidate: dropping the background gain/tilt augmentation), or the
+difference is within training-run noise. v6 remains the best submission.
+
+How to read the leaderboard columns: the overall score is 1 − RMSE of `share_added_vessel`.
+The "Share Added Vessel" column is that RMSE (lower is better: 1 − 0.2258 = 0.7742). The "Score
+Added Vessel" column is the ROC AUC of `score_added_vessel` (0.5 = chance; zero weight).
 
 ### Synthetic references (`real_v1`, for reference)
 
