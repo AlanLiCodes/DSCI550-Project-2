@@ -70,23 +70,13 @@ def place_reference(
         ref = Reference(ref.vessel_id, ref.source, lin_s, rng_s, ref.spreading, ref.group)
     broadband = np.nansum(ref.lin, axis=1)
     peak = int(np.nanargmax(broadband))
-    # With a negative margin the peak may fall outside the window; redraw until some
-    # passage energy is inside, so a placed passage never silently becomes a zero label.
-    for _ in range(20):
-        peak_pos = int(rng.integers(peak_margin, minutes - peak_margin))
-        start = peak - peak_pos
-        src = np.arange(start, start + minutes)
-        ok = (src >= 0) & (src < ref.n_minutes)
-        if ok.any() and broadband[src[ok]].sum() > 0:
-            break
-    else:  # fall back to a centred peak
-        peak_pos = minutes // 2
-        start = peak - peak_pos
-        src = np.arange(start, start + minutes)
-        ok = (src >= 0) & (src < ref.n_minutes)
+    peak_pos = int(rng.integers(peak_margin, minutes - peak_margin))
+    start = peak - peak_pos
 
     seg = np.zeros((minutes, config.N_BANDS))
     r_ref = np.full(minutes, np.nan)
+    src = np.arange(start, start + minutes)
+    ok = (src >= 0) & (src < ref.n_minutes)
     seg[ok] = ref.lin[src[ok]]
     r_ref[ok] = ref.range_m[src[ok]]
 
@@ -177,7 +167,6 @@ def make_mixtures(
     busy_refs=None,
     bg_weights=None,
     return_cells: bool = False,
-    edge_dropout=(0.0, 0.0),
     **place_kwargs,
 ):
     """Build ``n`` labelled mixtures.
@@ -210,14 +199,6 @@ def make_mixtures(
     ``bg_weights`` (one per background window) multiplies the sampling weight of each
     background, e.g. to over-sample hard negatives (see pipeline.hard_negative_weights).
 
-    ``edge_dropout=(p_first, p_last)`` masks the first / last minute of the window
-    with those probabilities (in addition to ``minute_dropout``). Released training
-    windows and Test.csv windows only ever miss edge minutes, never middle ones.
-
-    ``peak_margin`` (passed to place_reference) sets where a passage may peak: minutes
-    [margin, 15 - margin). A negative margin lets the peak fall outside the window, so
-    only the rise or the tail of a passage is inside it.
-
     ``return_cells=True`` appends a fifth output: the per-cell added-energy fraction
     (n, 15, 25), added / mixture in each observed cell (NaN where unobserved). The
     window label equals the mixture-energy-weighted mean of these fractions.
@@ -242,10 +223,6 @@ def make_mixtures(
         bg_idx = rng.choice(len(X_bg), size=n, p=w / w.sum())
     for i, b in enumerate(bg_idx):
         bg = drop_minutes(np.asarray(X_bg[b], dtype=float), rng, *minute_dropout)
-        if edge_dropout[0] > 0 and rng.random() < edge_dropout[0]:
-            bg[0] = np.nan
-        if edge_dropout[1] > 0 and rng.random() < edge_dropout[1]:
-            bg[-1] = np.nan
         row = {"bg_index": int(b), "vessel_id": None, "source": None, "atb_db": np.nan, "cpa_m": np.nan, "busy": 0}
         if gain_db > 0 or bg_tilt_db > 0:
             bg = bg + gain_tilt_db(rng, gain_db, bg_tilt_db)[None, :]

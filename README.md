@@ -14,7 +14,7 @@ metric is **1 − RMSE** on `share_added_vessel`.
 
 ```bash
 pip install -e ".[dev]"     # also: pip install pyarrow (parquet)
-pytest                      # 47 tests (the CNN test needs PyTorch)
+pytest                      # 45 tests (the CNN test needs PyTorch)
 ```
 
 Data layout (nothing under `data/` or `outputs/` is committed):
@@ -150,7 +150,6 @@ Notes:
 | `v2b_vtuad_stretch` (stretch ≤ 4×) | 0.7161 | 0.541 |
 | `v4_loud_busy` (raw clips, ATB −20 to +10, loudness + busy-background augmentation) | 0.7738 | 0.530 |
 | `v6_cnn` (per-cell CNN, ATB −20 to +5, transient masking, hard negatives, all non-test days) | **0.7835** | 0.505 |
-| `v7_cnn` (v6 + edge-only missing minutes, peak anywhere, no background gain/tilt) | 0.7742 | 0.503 |
 
 Local scores of about 0.86 did **not** transfer, so the mixtures did not match how the test windows were built.
 Diagnostics on the test *inputs* (no labels; `scripts/diagnose_test_shift.py`):
@@ -276,52 +275,6 @@ python scripts/run_pipeline.py --records data/South_African_Real_Acoustics --tes
     --refs-vtuad data/references/vtuad --gain-aug 10 --tilt-aug 6 --ref-tilt-aug 6 --ref-jitter 1 \
     --busy-p 0.4 --busy-atb=-15,5 --hard-negatives 30 --cnn --final-model cnn --out outputs/v6
 ```
-
-### Narrowing the simulation gap (v7)
-
-Adversarial validation of v6-style mixtures against Test.csv windows (inputs only,
-`scripts/compare_simulation_designs.py`) found three mismatches:
-
-1. **Missing minutes.** Test windows only lose minute 1 (42%) or minute 15 (7%) and never a middle minute. Neither do the released backgrounds. Our random 1–2-minute dropout masked every position about 5% of the time.
-2. **Passage position.** Passages were forced to peak in minutes 4–11, which gave the mixtures a mid-window hump. Test windows have a flat profile, and their broadband peaks are spread evenly across the window.
-3. **Level range.** ±10 dB background gain made the 31.6 Hz level range wider than the test's (67–112 vs 75–106 dB).
-
-| Design | Separation AUC (all features) | Excluding missingness | Label mean |
-|---|---|---|---|
-| v6 | 0.918 | 0.879 | 0.198 |
-| A: edge-only missing minutes (`--minute-dropout 0 --edge-dropout 0.4,0.07`) | 0.901 | 0.875 | 0.197 |
-| A + uncentred peaks (margin −4) + no background gain/tilt | 0.874 | 0.838 | 0.196 |
-| **v7**: A + peak anywhere + no background gain/tilt (`--gain-aug 0 --tilt-aug 0`) | **0.863** | **0.829** | 0.195 |
-
-A peak margin of −4 (peaks allowed outside the window) over-shot: too many edge peaks. Before
-passages were forced to overlap the window, short clips silently became zero labels (label
-mean 0.144), so `place_reference` now redraws until some passage energy is inside.
-
-**The edge-missingness rates (40% / 7%) are copied from Test.csv inputs.** This is the one
-setting taken directly from the test set rather than from first principles; the team should
-decide whether that is acceptable.
-The other two changes are physically motivated: a 15-minute window is an arbitrary cut, and
-the test level range already lies within the released backgrounds.
-
-v7 (CNN, all non-test days, otherwise as v6): test predictions average 0.166 (median 0.104),
-correlation 0.90 with v6. Held-out check, with the CNN trained on the training split only:
-
-| CNN | Held-out (v7-design mixtures) | Held-out (v6-design mixtures) | St Francis mixtures | Clean St Francis | Clean others |
-|---|---|---|---|---|---|
-| v6 | – | 0.872 | 0.883 | 0.022 | 0.008 |
-| v7 | 0.875 | 0.868 | 0.862 | 0.046 | 0.010 |
-
-v7 loses almost nothing on the old design, and the St Francis false-positive fix holds
-(0.046, against 0.159 before the CNN).
-
-**Leaderboard: v7 scored 0.7742, below v6 (0.7835).** Making the mixtures harder to tell apart
-from test windows (AUC 0.918 → 0.863) did not improve the score. Either one of the three changes
-hurt (most likely candidate: dropping the background gain/tilt augmentation), or the
-difference is within training-run noise. v6 remains the best submission.
-
-How to read the leaderboard columns: the overall score is 1 − RMSE of `share_added_vessel`.
-The "Share Added Vessel" column is that RMSE (lower is better: 1 − 0.2258 = 0.7742). The "Score
-Added Vessel" column is the ROC AUC of `score_added_vessel` (0.5 = chance; zero weight).
 
 ### Synthetic references (`real_v1`, for reference)
 
