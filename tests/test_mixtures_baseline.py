@@ -167,3 +167,25 @@ def test_busy_background_lowers_share_for_same_added_energy():
     s_plain = share_from_parts(added, db_to_lin(bg) + added, axis=None)
     s_busy = share_from_parts(added, db_to_lin(busy) + added, axis=None)
     assert s_busy < s_plain
+
+
+def test_negative_margin_passages_always_overlap_window():
+    from vesselnoise.reference import Reference
+
+    lin = np.zeros((3, 25))
+    lin[1] = 1.0
+    ref = Reference("v", "vtuad_tug", lin, np.array([500.0, 100.0, 500.0]))
+    rng = np.random.default_rng(0)
+    positions = []
+    for _ in range(200):
+        added, info = place_reference(ref, rng, peak_margin=-4)
+        assert added.sum() > 0
+        positions.append(info["peak_minute"])
+    assert min(positions) < 0 or max(positions) > 14 or len(set(positions)) > 10
+
+
+def test_edge_dropout_masks_only_edges():
+    X, meta = _bg_pool(50)
+    Xm, *_ = make_mixtures(X, meta, _refs(), 300, seed=7, minute_dropout=(0.0, 2), edge_dropout=(1.0, 0.0))
+    M = np.isnan(Xm).all(axis=2)
+    assert M[:, 0].all() and not M[:, 1:].any()

@@ -66,6 +66,8 @@ def parse_args():
     ap.add_argument("--p-zero", type=float, default=config.P_ZERO_ADDITION)
     ap.add_argument("--minute-dropout", type=float, default=config.MINUTE_DROPOUT_P, help="share of backgrounds with masked whole minutes")
     ap.add_argument("--stretch-max", type=float, default=1.0, help="max time-stretch of references (1 = off)")
+    ap.add_argument("--edge-dropout", default="0,0", help="probabilities of masking the first,last minute (e.g. 0.4,0.07)")
+    ap.add_argument("--peak-margin", type=int, default=3, help="passage peak lands in minutes [m, 15-m); 0 = anywhere in the window")
     ap.add_argument("--gain-aug", type=float, default=0.0, help="random background gain, +-dB (loudness augmentation)")
     ap.add_argument("--tilt-aug", type=float, default=0.0, help="random background spectral tilt, +-dB/decade")
     ap.add_argument("--ref-tilt-aug", type=float, default=0.0, help="random channel tilt on added passages, +-dB/decade")
@@ -143,6 +145,8 @@ def main():
         "ref_jitter_db": args.ref_jitter,
         "busy_p": args.busy_p,
         "busy_atb_range_db": tuple(float(v) for v in args.busy_atb.split(",")),
+        "edge_dropout": tuple(float(v) for v in args.edge_dropout.split(",")),
+        "peak_margin": args.peak_margin,
     }
 
     if not args.no_mask_transients and "timestamp" in records:
