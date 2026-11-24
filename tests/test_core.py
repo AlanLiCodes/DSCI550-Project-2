@@ -130,3 +130,29 @@ def test_wide_test_format_parsed():
     assert X.shape == (2, 15, 25)
     assert X[0, 0, 1] == vals[0, 1] and X[0, 1, 0] == vals[0, 25]
     assert meta["window_id"].tolist() == ["a", "b"]
+
+
+def test_run_start_transient_detected_and_masked():
+    from vesselnoise.windows import mask_run_start_transients
+
+    runs = []
+    for k in range(8):  # 8 runs separated by gaps; first minute of each run is +25 dB
+        d = _records(20, f"2025-01-0{1 + k // 4} {2 * (k % 4):02d}:00", station="A")
+        band = [c for c in d.columns if c.startswith("f")]
+        d.loc[0, band] = 105.0
+        runs.append(d)
+    std, _ = standardise(pd.concat(runs, ignore_index=True))
+    masked, table = mask_run_start_transients(std)
+    assert table["masked_positions"].iloc[0] == (0,)
+    assert masked[BAND_COLS].isna().all(axis=1).sum() == 8
+    assert np.nanmax(masked[BAND_COLS].to_numpy()) == 80.0
+
+
+def test_no_transient_no_mask():
+    from vesselnoise.windows import mask_run_start_transients
+
+    runs = [_records(20, f"2025-01-01 {2 * k:02d}:00") for k in range(6)]
+    std, _ = standardise(pd.concat(runs, ignore_index=True))
+    masked, table = mask_run_start_transients(std)
+    assert table["masked_positions"].iloc[0] == ()
+    assert not masked[BAND_COLS].isna().any().any()

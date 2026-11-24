@@ -44,7 +44,7 @@ from vesselnoise.reference import load_reference_dir, synthetic_reference_set  #
 from vesselnoise.vtuad import load_vtuad_references  # noqa: E402
 from vesselnoise.splits import daily_residual_autocorr  # noqa: E402
 from vesselnoise.synth import synthetic_records, synthetic_test  # noqa: E402
-from vesselnoise.windows import build_windows, windows_from_long  # noqa: E402
+from vesselnoise.windows import build_windows, mask_run_start_transients, windows_from_long  # noqa: E402
 
 
 def parse_args():
@@ -72,13 +72,19 @@ def parse_args():
     ap.add_argument("--ref-jitter", type=float, default=0.0, help="per-band channel jitter on added passages, dB sd")
     ap.add_argument("--busy-p", type=float, default=0.0, help="share of backgrounds given an extra passage counted as background")
     ap.add_argument("--busy-atb", default="-15,5", help="ATB range (dB) of that background passage")
+    ap.add_argument("--no-mask-transients", action="store_true", help="keep recorder start-up transients (masked by default)")
+    ap.add_argument("--hard-negatives", type=float, default=0.0, help="over-sample wrongly flagged training backgrounds (strength, e.g. 30)")
+    ap.add_argument("--cnn", action="store_true", help="also train and evaluate the per-cell CNN (needs PyTorch)")
+    ap.add_argument("--cnn-epochs", type=int, default=20)
+    ap.add_argument("--cnn-width", type=int, default=32)
     ap.add_argument("--station-balance", type=float, default=0.0, help="0 = sample windows uniformly, 1 = stations uniformly")
     ap.add_argument("--station-aware", action="store_true", help="use station/hour features in experiments (not usable for Test.csv)")
     ap.add_argument("--drop-families", default="", help="comma-separated feature families to drop everywhere, e.g. level")
     ap.add_argument("--loso", action="store_true", help="leave-one-site-out cross-validation")
     ap.add_argument("--source-shift", action="store_true", help="train on one reference source, test on the other")
     ap.add_argument("--ablations", action="store_true")
-    ap.add_argument("--final-model", default="auto", help="model for the submission (auto = best by blocked CV)")
+    ap.add_argument("--final-model", default="auto",
+                    help="model for the submission: hist_gb, random_forest, ridge, cnn, ensemble_gb_cnn, or auto (best by blocked CV)")
     ap.add_argument("--fast", action="store_true", help="smaller models / fewer trees")
     ap.add_argument("--seed", type=int, default=config.SEED)
     ap.add_argument("--out", default="outputs/run")
@@ -139,17 +145,25 @@ def main():
         "busy_atb_range_db": tuple(float(v) for v in args.busy_atb.split(",")),
     }
 
+    if not args.no_mask_transients and "timestamp" in records:
+        records, transients = mask_run_start_transients(records)
+        flagged = transients[transients["masked_positions"].map(len) > 0]
+        transients.to_csv(out / "run_start_transients.csv", index=False)
+        print(f"[transients] masked start-up minutes for {len(flagged)} recorders: "
+              + ", ".join(f"{r.recorder[:24]} {r.masked_positions}" for r in flagged.itertuples()))
     X_bg, meta_bg = build_windows(records)
     print(f"[windows] {len(X_bg)} background windows from {meta_bg['station'].nunique()} stations")
     refs = load_refs(args)
 
     # ---- main blocked evaluation ----------------------------------------------
     n_mix = {"train": args.n_train, "val": args.n_val, "test": args.n_test}
+    cnn_kwargs = {"epochs": args.cnn_epochs, "width": args.cnn_width} if (args.cnn or args.final_model in ("cnn", "ensemble_gb_cnn")) else None
     exp = build_experiment(
-        X_bg, meta_bg, refs, n_mix, seed=args.seed, p_zero=args.p_zero, station_aware=args.station_aware, mix_kwargs=mix_kwargs
+        X_bg, meta_bg, refs, n_mix, seed=args.seed, p_zero=args.p_zero, station_aware=args.station_aware, mix_kwargs=mix_kwargs,
+        hard_negatives=args.hard_negatives, with_cells=cnn_kwargs is not None,
     )
     print("[split]", json.dumps(exp.log))
-    results, preds, fitted = evaluate_models(exp, seed=args.seed, fast=args.fast, drop_families=drop)
+    results, preds, fitted = evaluate_models(exp, seed=args.seed, fast=args.fast, drop_families=drop, cnn_kwargs=cnn_kwargs)
     results.to_csv(out / "results.csv", index=False)
     show = ["model", "split", "score", "rmse", "mae", "bias", "ci_lo", "ci_hi", "roc_auc", "pr_auc", "fit_s"]
     print("\n[results]\n" + results[[c for c in show if c in results]].round(4).to_string(index=False))
@@ -213,7 +227,7 @@ def main():
         share, score = fit_final_and_predict(
             X_bg[keep], meta_bg.loc[keep].reset_index(drop=True), refs, X_test, meta_test,
             model_name=final, n_train=args.n_train + args.n_val, seed=args.seed, fast=args.fast,
-            drop_families=drop, mix_kwargs=mix_kwargs,
+            drop_families=drop, mix_kwargs=mix_kwargs, hard_negatives=args.hard_negatives, cnn_kwargs=cnn_kwargs,
         )
         sub = pd.DataFrame({id_name: meta_test["window_id"].to_numpy(), config.TARGET_SHARE: share, config.TARGET_SCORE: score})
         if args.sample_submission:

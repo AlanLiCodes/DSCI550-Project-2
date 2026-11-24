@@ -165,6 +165,8 @@ def make_mixtures(
     busy_p: float = 0.0,
     busy_atb_range_db=(-15.0, 5.0),
     busy_refs=None,
+    bg_weights=None,
+    return_cells: bool = False,
     **place_kwargs,
 ):
     """Build ``n`` labelled mixtures.
@@ -193,6 +195,13 @@ def make_mixtures(
 
     Returns X_mix (n, 15, 25) dB, y_share (n,), y_present (n,), info DataFrame
     (carries station/day/hour of the background so splits stay valid).
+
+    ``bg_weights`` (one per background window) multiplies the sampling weight of each
+    background, e.g. to over-sample hard negatives (see pipeline.hard_negative_weights).
+
+    ``return_cells=True`` appends a fifth output: the per-cell added-energy fraction
+    (n, 15, 25), added / mixture in each observed cell (NaN where unobserved). The
+    window label equals the mixture-energy-weighted mean of these fractions.
     """
     busy_refs = busy_refs if busy_refs is not None else refs
     rng = np.random.default_rng(seed)
@@ -200,13 +209,18 @@ def make_mixtures(
     X = np.empty((n, minutes, X_bg.shape[2]))
     y = np.zeros(n)
     present = np.zeros(n, dtype=int)
+    cells = np.zeros((n, minutes, X_bg.shape[2]), dtype=np.float32) if return_cells else None
     rows = []
+    w = np.ones(len(X_bg))
     if station_balance and "station" in meta_bg:
         counts = meta_bg["station"].map(meta_bg["station"].value_counts()).to_numpy(dtype=float)
-        w = counts ** (-float(station_balance))
-        bg_idx = rng.choice(len(X_bg), size=n, p=w / w.sum())
-    else:
+        w = w * counts ** (-float(station_balance))
+    if bg_weights is not None:
+        w = w * np.asarray(bg_weights, dtype=float)
+    if np.allclose(w, w[0]):
         bg_idx = rng.integers(0, len(X_bg), size=n)
+    else:
+        bg_idx = rng.choice(len(X_bg), size=n, p=w / w.sum())
     for i, b in enumerate(bg_idx):
         bg = drop_minutes(np.asarray(X_bg[b], dtype=float), rng, *minute_dropout)
         row = {"bg_index": int(b), "vessel_id": None, "source": None, "atb_db": np.nan, "cpa_m": np.nan, "busy": 0}
@@ -223,7 +237,10 @@ def make_mixtures(
             if ref_tilt_db > 0 or ref_jitter_db > 0:
                 added = added * db_to_lin(gain_tilt_db(rng, 0.0, ref_tilt_db, ref_jitter_db))[None, :]
             atb = float(atb_sampler(rng)) if atb_sampler else float(rng.uniform(*atb_range_db))
-            X[i], _, y[i] = mix_one(bg, added, atb)
+            X[i], add_i, y[i] = mix_one(bg, added, atb)
+            if return_cells:
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    cells[i] = add_i / db_to_lin(X[i])
             present[i] = int(y[i] > 0)
             row.update(vessel_id=ref.vessel_id, source=ref.source, atb_db=atb, cpa_m=info["cpa_m"])
         rows.append(row)
@@ -231,6 +248,9 @@ def make_mixtures(
     keep_cols = [c for c in ["station", "day", "hour", "start", "window_id"] if c in meta_bg.columns]
     info = pd.concat([meta_bg.iloc[bg_idx][keep_cols].reset_index(drop=True), info], axis=1)
     info["missing_frac"] = np.isnan(X).mean(axis=(1, 2))
+    if return_cells:
+        cells[np.isnan(X)] = np.nan
+        return X, y, present, info, cells
     return X, y, present, info
 
 

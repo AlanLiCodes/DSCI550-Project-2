@@ -26,6 +26,7 @@ class SplitData:
     present: np.ndarray
     info: pd.DataFrame
     F: pd.DataFrame | None = None
+    cells: np.ndarray | None = None
 
     @property
     def blocks(self):
@@ -54,12 +55,16 @@ def build_experiment(
     ref_filter=None,
     station_aware=False,
     mix_kwargs=None,
+    hard_negatives: float = 0.0,
+    with_cells: bool = False,
 ):
     """Split backgrounds chronologically and references by vessel, *then* build mixtures.
 
     ``ref_filter`` maps split name -> predicate on Reference (used for the
     reference-source-shift experiment). ``station_aware=False`` (default) matches
     the competition test set, which carries no station or timestamp.
+    ``hard_negatives`` > 0 over-samples training backgrounds that a first-pass model
+    wrongly flags (training split only). ``with_cells`` keeps per-cell targets for the CNN.
     """
     mix_kwargs = mix_kwargs or {}
     n_mix = n_mix or {"train": 20000, "val": 5000, "test": 5000}
@@ -75,11 +80,15 @@ def build_experiment(
             # Source-shift runs ignore the per-vessel split for the filtered side and
             # use every vessel of the requested source instead.
             rs = [r for r in refs if ref_filter[s](r)]
-        X, y, pres, info = make_mixtures(
-            X_bg[m], meta_bg.loc[m].reset_index(drop=True), rs, n_mix[s],
-            seed=seed + 101 * i, atb_sampler=atb_sampler, p_zero=p_zero, **mix_kwargs,
+        kw = dict(mix_kwargs)
+        meta_s = meta_bg.loc[m].reset_index(drop=True)
+        if s == "train" and hard_negatives > 0:
+            kw["bg_weights"], _ = hard_negative_weights(X_bg[m], meta_s, rs, mix_kwargs, strength=hard_negatives, seed=seed)
+        out = make_mixtures(
+            X_bg[m], meta_s, rs, n_mix[s],
+            seed=seed + 101 * i, atb_sampler=atb_sampler, p_zero=p_zero, return_cells=with_cells and s == "train", **kw,
         )
-        splits[s] = SplitData(X, y, pres, info)
+        splits[s] = SplitData(*out[:4], cells=out[4] if len(out) == 5 else None)
     tr = bg_split == "train"
     fb = FeatureBuilder(station_aware=station_aware).fit(
         X_bg[tr], meta_bg.loc[tr].reset_index(drop=True), X_tune=splits["train"].X, y_tune=splits["train"].y, meta_tune=splits["train"].info
@@ -103,7 +112,7 @@ def _model_size_kb(model) -> float:
         return float("nan")
 
 
-def evaluate_models(exp: Experiment, models=None, eval_splits=("val", "test"), drop_families=(), seed=config.SEED, fast=False, with_ci=True):
+def evaluate_models(exp: Experiment, models=None, eval_splits=("val", "test"), drop_families=(), seed=config.SEED, fast=False, with_ci=True, cnn_kwargs=None):
     """Fit each model on train mixtures, score on val/test. Returns (results, predictions, fitted)."""
     models = models or regressors(seed, fast=fast)
     tr = exp.splits["train"]
@@ -133,6 +142,23 @@ def evaluate_models(exp: Experiment, models=None, eval_splits=("val", "test"), d
             t1 = time.perf_counter()
             p = predict_clipped(model, exp.splits[s].F[cols])
             record(name, s, p, fit_s, time.perf_counter() - t1, _model_size_kb(model))
+
+    if cnn_kwargs is not None:
+        if tr.cells is None:
+            raise ValueError("CNN evaluation needs build_experiment(..., with_cells=True)")
+        from .cnn import CellCNN
+
+        t0 = time.perf_counter()
+        va = exp.splits["val"]
+        cnn = CellCNN(seed=seed, **cnn_kwargs).fit(tr.X, tr.y, tr.cells, X_val=va.X, y_val=va.y)
+        fit_s = time.perf_counter() - t0
+        fitted["cnn"] = cnn
+        for s in eval_splits:
+            t1 = time.perf_counter()
+            p = cnn.predict(exp.splits[s].X)
+            record("cnn", s, p, fit_s, time.perf_counter() - t1)
+            if ("hist_gb", s) in preds:
+                record("ensemble_gb_cnn", s, 0.5 * (p + preds[("hist_gb", s)]))
 
     clf = presence_classifier(seed)
     clf.fit(tr.F[cols], tr.present)
@@ -202,26 +228,69 @@ def run_loso(
     return res, summary
 
 
+def hard_negative_weights(X_bg, meta_bg, refs, mix_kwargs=None, strength=10.0, n=12000, folds=2, seed=config.SEED):
+    """Sampling weights that over-sample backgrounds a first-pass model wrongly flags.
+
+    Station-days are split into ``folds``; for each fold a quick histogram-GB model is
+    trained on mixtures built from the other folds and predicts the *clean* windows
+    of the held-out fold (true share 0). weight = 1 + strength * prediction, so a
+    clean window predicted at 0.3 is drawn ~4x as often. Uses training data only.
+
+    Returns (weights, out-of-fold predictions on clean backgrounds).
+    """
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    mix_kwargs = dict(mix_kwargs or {})
+    mix_kwargs.pop("bg_weights", None)
+    keys = meta_bg["station"].astype(str) + "_" + pd.to_datetime(meta_bg["day"]).dt.strftime("%Y%m%d")
+    uk = np.unique(keys)
+    rng = np.random.default_rng(seed)
+    fold_of = dict(zip(uk, rng.integers(0, folds, size=len(uk))))
+    fold = keys.map(fold_of).to_numpy()
+    pred = np.zeros(len(X_bg))
+    for f in range(folds):
+        tr, te = fold != f, fold == f
+        mtr = meta_bg.loc[tr].reset_index(drop=True)
+        Xm, y, _, info = make_mixtures(X_bg[tr], mtr, refs, n, seed=seed + 31 * f, **mix_kwargs)
+        fb = FeatureBuilder(station_aware=False).fit(X_bg[tr], mtr)
+        mdl = HistGradientBoostingRegressor(max_iter=200, learning_rate=0.08, random_state=seed).fit(fb.transform(Xm, info), y)
+        pred[te] = np.clip(mdl.predict(fb.transform(X_bg[te], meta_bg.loc[te].reset_index(drop=True))), 0, 1)
+    return 1.0 + strength * pred, pred
+
+
 def fit_final_and_predict(
     X_bg, meta_bg, refs, X_test, meta_test, model_name="hist_gb", n_train=25000, seed=config.SEED,
-    atb_sampler=None, fast=False, drop_families=(), mix_kwargs=None,
+    atb_sampler=None, fast=False, drop_families=(), mix_kwargs=None, hard_negatives=0.0, cnn_kwargs=None,
 ):
     """Train on mixtures from all non-test background windows and predict the competition test set.
 
-    Test windows are used only for inference. Features are station-agnostic unless
-    the test metadata carries a station column.
+    ``model_name``: a regressor from ``models.regressors``, "excess_baseline", "cnn",
+    or "ensemble_gb_cnn" (mean of histogram GB and CNN). Test windows are used only
+    for inference. Features are station-agnostic unless the test metadata carries a
+    station column. Returns (share, score); the evidence score is the predicted
+    share itself (the separate presence classifier was at chance on the leaderboard).
     """
     station_aware = "station" in meta_test.columns
-    X, y, pres, info = make_mixtures(X_bg, meta_bg, refs, n_train, seed=seed + 7, atb_sampler=atb_sampler, **(mix_kwargs or {}))
-    fb = FeatureBuilder(station_aware=station_aware).fit(X_bg, meta_bg, X_tune=X, y_tune=y, meta_tune=info)
-    F = fb.transform(X, info)
-    cols = columns_for(F, drop_families)
-    F, Ft = F[cols], fb.transform(X_test, meta_test)[cols]
-    if model_name == "excess_baseline":
-        share = Ft["excess_share"].to_numpy()
-    else:
-        mdl = regressors(seed, fast=fast)[model_name].fit(F, y)
-        share = predict_clipped(mdl, Ft)
-    clf = presence_classifier(seed).fit(F, pres)
-    score = clf.predict_proba(Ft)[:, 1]
-    return share, score
+    mix_kwargs = dict(mix_kwargs or {})
+    if hard_negatives > 0:
+        mix_kwargs["bg_weights"], _ = hard_negative_weights(X_bg, meta_bg, refs, mix_kwargs, strength=hard_negatives, seed=seed)
+    need_cnn = model_name in ("cnn", "ensemble_gb_cnn")
+    out = make_mixtures(X_bg, meta_bg, refs, n_train, seed=seed + 7, atb_sampler=atb_sampler, return_cells=need_cnn, **mix_kwargs)
+    X, y, pres, info = out[:4]
+    preds = []
+    if model_name != "cnn":
+        fb = FeatureBuilder(station_aware=station_aware).fit(X_bg, meta_bg, X_tune=X, y_tune=y, meta_tune=info)
+        F = fb.transform(X, info)
+        cols = columns_for(F, drop_families)
+        F, Ft = F[cols], fb.transform(X_test, meta_test)[cols]
+        if model_name == "excess_baseline":
+            preds.append(Ft["excess_share"].to_numpy())
+        else:
+            tree = "hist_gb" if model_name == "ensemble_gb_cnn" else model_name
+            preds.append(predict_clipped(regressors(seed, fast=fast)[tree].fit(F, y), Ft))
+    if need_cnn:
+        from .cnn import CellCNN
+
+        preds.append(CellCNN(seed=seed, **(cnn_kwargs or {})).fit(X, y, out[4]).predict(X_test))
+    share = np.clip(np.mean(preds, axis=0), 0.0, 1.0)
+    return share, share.copy()

@@ -14,7 +14,7 @@ metric is **1 − RMSE** on `share_added_vessel`.
 
 ```bash
 pip install -e ".[dev]"     # also: pip install pyarrow (parquet)
-pytest                      # 38 tests, ~7 s
+pytest                      # 45 tests (the CNN test needs PyTorch)
 ```
 
 Data layout (nothing under `data/` or `outputs/` is committed):
@@ -218,6 +218,54 @@ Results: histogram GB 0.830 on held-out days and hulls (constant 0.766 on the sa
 prior is narrower). Test predictions average 0.216 (v4: 0.244), correlation 0.945 with v4.
 On the validation mixtures the model is already unbiased (bias +0.001), so no extra
 post-hoc calibration step is applied.
+
+### False positives and the per-cell CNN (v6)
+
+**Recorder start-up transients (data cleaning).** On most recorders the first minute
+after every recording gap reads 18–36 dB high (two minutes on the 6509 units at Bird
+Island and St Croix). These sat in training backgrounds as huge spikes labelled 0.
+`windows.mask_run_start_transients` measures each recorder's run-start deviation from
+the training data and masks positions more than 6 dB off: 1,917 minutes on 10
+recorders, and none at St Francis, Fish Hoek, Saldanha Bay, Sea Point or Durban (table
+written to `run_start_transients.csv`). This is on by default (`--no-mask-transients` to
+disable). It may also be why 42% of test windows lack minute 1.
+
+**St Francis false positives.** St Francis has no artefact. It is genuinely loud and
+variable (2–8 kHz level 82.8 vs 62.3 dB elsewhere; median minute-to-minute jump 11 dB vs
+4.7 dB) and is only 3% of training windows, so the tree model read its natural swings as
+passages. `--hard-negatives 30` (`pipeline.hard_negative_weights`) trains out-of-fold
+first-pass models on the training split and over-samples clean training windows they
+wrongly flag (weight = 1 + 30 × prediction).
+
+| Model (v5 settings) | Held-out score | St Francis mixtures | Clean St Francis | Clean other sites | Test prediction mean |
+|---|---|---|---|---|---|
+| hist GB, v5 (no fix) | 0.829 | 0.752 | 0.159 | 0.024 | 0.221 |
+| hist GB + transient masking | 0.830 | 0.751 | 0.154 | 0.023 | 0.221 |
+| hist GB + masking + hard negatives ×30 | 0.827 | 0.769 | 0.120 | 0.019 | 0.200 |
+| **per-cell CNN** + masking + hard negatives (40k mixtures) | **0.872** | **0.883** | **0.022** | **0.008** | 0.168 |
+| average of hist GB (40k) and CNN | 0.861 | 0.845 | 0.066 | 0.012 | 0.190 |
+
+**Per-cell CNN (`vesselnoise.cnn`).** For every (minute, band) cell the network predicts the
+added-energy fraction added / mixture. The window share is the energy-weighted mean of those
+fractions, which reproduces the label exactly (`make_mixtures(..., return_cells=True)`).
+The loss combines share MSE with an energy-weighted per-cell MSE.
+
+- **Inputs:** five level-robust channels: level relative to the window median, temporal deviation per band, spectral shape per minute, observed mask, absolute level.
+- **Network:** 4 dilated residual blocks plus a window-level FiLM context; 79k parameters.
+- **Augmentation:** time-flip.
+- **Training:** about 75 s per epoch on 2 CPUs for 40k mixtures; best validation RMSE 0.128 after 20 epochs.
+
+The CNN beats histogram GB everywhere locally, and averaging the two is worse than the CNN
+alone. On Test.csv the two models' predictions correlate only 0.68, so the leaderboard decides.
+The evidence score in submissions is now the predicted share, since the separate presence
+classifier was at chance on the leaderboard (AUC ~0.53).
+
+```bash
+pip install -e ".[dev,cnn]"
+python scripts/run_pipeline.py --records data/South_African_Real_Acoustics --test data/Test.csv \
+    --refs-vtuad data/references/vtuad --gain-aug 10 --tilt-aug 6 --ref-tilt-aug 6 --ref-jitter 1 \
+    --busy-p 0.4 --busy-atb=-15,5 --hard-negatives 30 --cnn --final-model cnn --out outputs/v6
+```
 
 ### Synthetic references (`real_v1`, for reference)
 
