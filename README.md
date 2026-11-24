@@ -303,7 +303,15 @@ The other two changes are physically motivated: a 15-minute window is an arbitra
 the test level range already lies within the released backgrounds.
 
 v7 (CNN, all non-test days, otherwise as v6): test predictions average 0.166 (median 0.104),
-correlation 0.90 with v6.
+correlation 0.90 with v6. Held-out check, with the CNN trained on the training split only:
+
+| CNN | Held-out (v7-design mixtures) | Held-out (v6-design mixtures) | St Francis mixtures | Clean St Francis | Clean others |
+|---|---|---|---|---|---|
+| v6 | – | 0.872 | 0.883 | 0.022 | 0.008 |
+| v7 | 0.875 | 0.868 | 0.862 | 0.046 | 0.010 |
+
+v7 loses almost nothing on the old design, and the St Francis false-positive fix holds
+(0.046, against 0.159 before the CNN).
 
 ### Synthetic references (`real_v1`, for reference)
 
