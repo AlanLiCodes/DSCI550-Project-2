@@ -148,7 +148,8 @@ Notes:
 | starter constant 0.1 (benchmark) | 0.7539 | – |
 | `v2a_vtuad` (ONC ambient subtracted, no stretch) | 0.7388 | 0.537 |
 | `v2b_vtuad_stretch` (stretch ≤ 4×) | 0.7161 | 0.541 |
-| `v4_loud_busy` (raw clips, ATB −20 to +10, loudness + busy-background augmentation) | **0.7738** | 0.530 |
+| `v4_loud_busy` (raw clips, ATB −20 to +10, loudness + busy-background augmentation) | 0.7738 | 0.530 |
+| `v6_cnn` (per-cell CNN, ATB −20 to +5, transient masking, hard negatives, all non-test days) | **0.7835** | 0.505 |
 
 Local scores of about 0.86 did **not** transfer, so the mixtures did not match how the test windows were built.
 Diagnostics on the test *inputs* (no labels; `scripts/diagnose_test_shift.py`):
@@ -256,7 +257,15 @@ The loss combines share MSE with an energy-weighted per-cell MSE.
 - **Training:** about 75 s per epoch on 2 CPUs for 40k mixtures; best validation RMSE 0.128 after 20 epochs.
 
 The CNN beats histogram GB everywhere locally, and averaging the two is worse than the CNN
-alone. On Test.csv the two models' predictions correlate only 0.68, so the leaderboard decides.
+alone. On Test.csv the two models' predictions correlate only 0.68.
+
+**Leaderboard: v6 scores 0.7835**, the best so far (v4: 0.7738; benchmark: 0.7539). Locally the CNN
+gained 0.04, but on the leaderboard it gained 0.010, and the local-to-leaderboard gap is still about 0.09
+(0.872 vs 0.784). The mismatch between our simulation and the test set remains the main limit.
+The four scored submissions cannot say whether the CNN *ranks* windows better or is just
+better calibrated (prediction mean 0.159 vs 0.244). If the true label mean is about 0.10, v6
+correlates about 0.54 with the labels against 0.80 for v2a, so the gain came from level. If the
+mean is 0.22 or higher, v6 ranks best.
 The evidence score in submissions is now the predicted share, since the separate presence
 classifier was at chance on the leaderboard (AUC ~0.53).
 
